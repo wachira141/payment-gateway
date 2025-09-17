@@ -53,6 +53,9 @@ class MpesaPaymentService implements PaymentStatusInterface
      */
     public function initiateSTKPush($amount, $phoneNumber, $accountReference, $transactionDesc)
     {
+        //format amount to remove any decimal places
+        // $amount = round($amount);
+        $amount=5;
         try {
             $accessToken = $this->getAccessToken();
             $timestamp = now()->format('YmdHis');

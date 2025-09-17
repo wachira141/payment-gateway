@@ -13,7 +13,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('payment_webhooks', function (Blueprint $table) {
-            $table->id();
+            $table->uuid('id')->primary();
             $table->string('payment_gateway_id', 36);
             $table->string('webhook_id')->unique()->comment('Unique webhook identifier');
             $table->string('event_type')->comment('Webhook event type');

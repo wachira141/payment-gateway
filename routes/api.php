@@ -17,6 +17,8 @@ use App\Http\Controllers\Api\v1\PayoutController;
 use App\Http\Controllers\Api\v1\SettlementController;
 use App\Http\Controllers\Api\v1\ApplicationDataController;
 use App\Http\Controllers\Api\v1\PaymentController;
+use App\Http\Controllers\Api\v1\LedgerController;
+use App\Http\Controllers\Api\v1\WebhookFlowController;
 
 Route::prefix('v1')->group(function () {
     // Public merchant authentication routes
@@ -76,6 +78,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('{webhookId}', [AppWebhookController::class, 'show']);
             });
             // Webhook event types for outbound webhooks
+            Route::get('webhook-event-types', [WebhookFlowController::class, 'getEventTypes']);
             Route::get('webhooks/event-types', [AppWebhookController::class, 'getEventTypes']);
         });
 
@@ -83,6 +86,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('webhooks')->group(function () {
             Route::get('logs', [WebhookController::class, 'getLogs']);
             Route::post('retry/{webhookId}', [WebhookController::class, 'retryWebhook']);
+            Route::get('flow-stats', [WebhookFlowController::class, 'getFlowStats']);
             Route::get('stats', [WebhookController::class, 'getWebhookStats']);
             Route::post('bulk-retry', [WebhookController::class, 'bulkRetryWebhooks']);
             Route::get('event-types', [WebhookController::class, 'getAvailableEventTypes']);
@@ -123,9 +127,10 @@ Route::prefix('v1')->group(function () {
         Route::prefix('customers')->group(function () {
             Route::get('/', [CustomerController::class, 'index']);
             Route::post('/', [CustomerController::class, 'store']);
-            Route::get('/{customerId}', [CustomerController::class, 'show']);
             Route::put('/{customerId}', [CustomerController::class, 'update']);
             Route::get('/{customerId}/payment-methods', [CustomerController::class, 'paymentMethods']);
+            Route::get('/{customerId}/payment-intents', [CustomerController::class, 'paymentIntents']);
+            Route::get('/{customerId}', [CustomerController::class, 'show']);
         });
 
 
@@ -149,10 +154,23 @@ Route::prefix('v1')->group(function () {
             Route::get('/{refundId}', [RefundController::class, 'show']);
         });
 
-        //Payments Management
-        Route::prefix('payment')->group(function () {
-            Route::post('/gateways', [PaymentController::class, 'getAvailableGateways']);
+        // Ledger and Financial Reports
+        Route::prefix('ledger')->group(function () {
+            Route::get('reports', [LedgerController::class, 'getFinancialReport']);
+            Route::get('balances', [LedgerController::class, 'getAccountBalance']);
+            Route::get('validate', [LedgerController::class, 'validateLedger']);
+            Route::get('reconciliation', [LedgerController::class, 'getReconciliation']);
+            Route::get('gateway-analysis', [LedgerController::class, 'getGatewayFeeAnalysis']);
+            Route::get('anomalies', [LedgerController::class, 'detectAnomalies']);
         });
+
+        //Payments Management
+        Route::prefix('payment-gateways')->group(function () {
+            Route::get('/available-gateways', [PaymentController::class, 'getAvailableGateways']);
+            Route::get('/gateway-fees', [PaymentController::class, 'gatewayFees']);
+            Route::get('/best-gateway', [PaymentController::class, 'getBestGateway']);
+        });
+
 
         // api keys management
         Route::prefix('api-keys')->group(function () {
@@ -184,6 +202,17 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/cancel', [PaymentIntentController::class, 'cancel']);
             Route::post('/{id}/confirm', [PaymentIntentController::class, 'confirm']);
             Route::get('/analytics', [PaymentIntentController::class, 'analytics']);
+        });
+
+        // Gateway Pricing Management
+        Route::prefix('gateway-pricing')->group(function () {
+            Route::get('merchant/{merchantId}', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'getMerchantPricing']);
+            Route::get('default', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'getDefaultPricing']);
+            Route::post('merchant', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'createMerchantPricing']);
+            Route::put('merchants/{configId}', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'updateMerchantPricing']);
+            Route::delete('merchants/{configId}', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'deleteMerchantPricing']);
+            Route::post('calculate-fees', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'calculateFees']);
+            Route::get('options', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'getGatewayOptions']);
         });
 
 

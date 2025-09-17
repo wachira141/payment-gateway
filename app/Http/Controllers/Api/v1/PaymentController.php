@@ -10,11 +10,11 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
+use Illuminate\Http\JsonResponse;
 
 class PaymentController extends Controller
 {
     protected $paymentProcessor;
-    protected $gatewayService;
     protected $paymentGatewayService;
 
 
@@ -27,22 +27,57 @@ class PaymentController extends Controller
         $this->paymentGatewayService = $paymentGatewayService;
     }
 
-    /**
-     * Get available payment gateways for user's country
+   /**
+     * Get available payment gateways for a country and currency
      */
-    public function getAvailableGateways(Request $request)
+    public function getAvailableGateways(Request $request): JsonResponse
     {
-        $countryCode = $request->get('country', $this->gatewayService->detectUserCountry(Auth::user()));
-        $currency = $request->get('currency', null);
-
-        $gateways = $this->gatewayService->getAvailableGateways($countryCode, $currency);
-
-        return response()->json([
-            'success' => true,
-            'data' => $gateways,
-            'country' => $countryCode,
-            'currency' => $currency,
+        $validator = Validator::make($request->all(), [
+            'country' => 'required|string',
+            'currency' => 'nullable|string|size:3',
+            'payment_method_types' => 'nullable|array',
+            'payment_method_types.*' => 'string|in:card,mobile_money,bank',
         ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 400);
+        }
+
+        $countryCode = $request->input('country');
+        $currency = $request->input('currency', 'USD');
+        $paymentMethodTypes = $request->input('payment_method_types', []);
+
+        try {
+            if (!empty($paymentMethodTypes)) {
+                // Filter gateways by payment method types
+                $gateways = $this->paymentGatewayService->getAvailableGatewaysForPaymentMethods(
+                    $countryCode, 
+                    $currency, 
+                    $paymentMethodTypes
+                );
+            } else {
+                // Get all available gateways for country and currency
+                $gateways = $this->paymentGatewayService->getAvailableGateways($countryCode, $currency);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $gateways,
+                'country' => $countryCode,
+                'currency' => $currency,
+                'payment_method_types' => $paymentMethodTypes
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch available gateways',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -50,11 +85,11 @@ class PaymentController extends Controller
      */
     public function getBestGateway(Request $request)
     {
-        $countryCode = $request->get('country', $this->gatewayService->detectUserCountry(Auth::user()));
+        $countryCode = $request->get('country', $this->paymentGatewayService->detectUserCountry(Auth::user()));
         $currency = $request->get('currency', 'USD');
         $preference = $request->get('preference');
 
-        $gateway = $this->gatewayService->getBestGateway($countryCode, $currency, $preference);
+        $gateway = $this->paymentGatewayService->getBestGateway($countryCode, $currency, $preference);
 
         if (!$gateway) {
             return response()->json([

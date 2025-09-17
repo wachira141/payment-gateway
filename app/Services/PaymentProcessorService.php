@@ -9,6 +9,7 @@ use App\Services\StripePaymentService;
 use App\Services\MpesaPaymentService;
 use App\Services\TelebirrPaymentService;
 use App\Services\PaymentIntentTransactionService;
+use App\Services\CustomerResolutionService;
 
 use Illuminate\Console\Application;
 use Illuminate\Support\Str;
@@ -20,24 +21,27 @@ class PaymentProcessorService
     protected $mpesaService;
     protected $telebirrService;
     protected $applicationDataService;
+    protected $customerResolver;
 
     public function __construct(
-        ApplicationDataService $applicationDataService,
-        StripePaymentService $stripeService,
-        MpesaPaymentService $mpesaService,
-        TelebirrPaymentService $telebirrService
-    ) {
-        $this->applicationDataService = $applicationDataService;
-        $this->stripeService = $stripeService;
-        $this->mpesaService = $mpesaService;
-        $this->telebirrService = $telebirrService;
-    }
-
+            ApplicationDataService $applicationDataService,
+            StripePaymentService $stripeService,
+            MpesaPaymentService $mpesaService,
+            TelebirrPaymentService $telebirrService,
+            CustomerResolutionService $customerResolver
+        ) {
+            $this->applicationDataService = $applicationDataService;
+            $this->stripeService = $stripeService;
+            $this->mpesaService = $mpesaService;
+            $this->telebirrService = $telebirrService;
+            $this->customerResolver = $customerResolver;
+        }
     /**
      * Process a payment request
      */
     public function processPayment(array $data)
     {
+
         try {
             // Get payment gateway
             $gateway = PaymentGateway::getByCode($data['gateway_code']);
@@ -57,10 +61,15 @@ class PaymentProcessorService
                     'error' => 'The provided payable type is not recognized.'
                 ], 500);
             }
+
+             // Resolve customer information from payment data
+             $customerId = $this->resolveCustomerForPayment($data);
+
             // Create transaction record
             $transaction = PaymentTransaction::createTransaction([
                 'transaction_id' => Str::uuid(),
-                'user_id' => $data['user_id'],
+                'merchant_id' => $data['merchant_id'],
+                'customer_id' => $customerId,
                 'payment_gateway_id' => $gateway->id,
                 'payable_type' => $payable,
                 'payable_id' => $data['payable_id'],
@@ -72,6 +81,7 @@ class PaymentProcessorService
 
             // Process payment based on gateway type
             $result = $this->processPaymentByGateway($gateway, $transaction, $data);
+
 
             // Update transaction with result
             if ($result['success']) {
@@ -159,6 +169,8 @@ class PaymentProcessorService
      */
     private function processMpesaPayment($transaction, $data)
     {
+
+
         try {
             $result = $this->mpesaService->initiateSTKPush(
                 $data['amount'],
@@ -228,7 +240,7 @@ class PaymentProcessorService
             'gateway_code' => $transaction->paymentGateway->code,
             'amount' => $transaction->amount,
             'currency' => $transaction->currency,
-            'user_id' => $transaction->user_id,
+            'merchant_id' => $transaction->merchant_id,
             'payable_type' => $transaction->payable_type,
             'payable_id' => $transaction->payable_id,
             'description' => $transaction->description,
@@ -376,5 +388,45 @@ class PaymentProcessorService
         }
         
         return ['success' => true];
+    }
+
+      /**
+     * Resolve customer for payment transaction
+     */
+    private function resolveCustomerForPayment(array $data): ?int
+    {
+        // If customer_id is explicitly provided, use it
+        if (isset($data['customer_id']) && $data['customer_id']) {
+            return $data['customer_id'];
+        }
+
+        // Try to resolve from payment intent if provided
+        if (isset($data['payment_intent_id'])) {
+            $paymentIntent = \App\Models\PaymentIntent::where('intent_id', $data['payment_intent_id'])->first();
+            if ($paymentIntent) {
+                $customer = $this->customerResolver->resolveFromPaymentIntent($paymentIntent);
+                return $customer ? $customer->id : null;
+            }
+        }
+
+        // Try to resolve from user and merchant context
+        if (isset($data['merchant_id']) && (isset($data['billing_details']) || isset($data['customer_email']) || isset($data['customer_phone']))) {
+            $merchant = \App\Models\Merchant::find($data['merchant_id']);
+            if ($merchant) {
+                $paymentData = [
+                    'billing_details' => $data['billing_details'] ?? null,
+                    'receipt_email' => $data['customer_email'] ?? null,
+                    'metadata' => array_merge($data['metadata'] ?? [], [
+                        'phone' => $data['customer_phone'] ?? null,
+                        'name' => $data['customer_name'] ?? null,
+                    ]),
+                ];
+                
+                $customer = $this->customerResolver->resolveFromPaymentData($merchant, $paymentData);
+                return $customer ? $customer->id : null;
+            }
+        }
+
+        return null;
     }
 }

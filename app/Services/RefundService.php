@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Services\BaseService;
+use App\Services\LedgerService;
 use App\Models\Refund;
 use App\Models\Charge;
 use App\Models\PaymentIntent;
@@ -11,10 +13,12 @@ use Illuminate\Support\Str;
 class RefundService extends BaseService
 {
     private BalanceService $balanceService;
+    private LedgerService $ledgerService;
 
-    public function __construct(BalanceService $balanceService)
+    public function __construct(BalanceService $balanceService, LedgerService $ledgerService)
     {
         $this->balanceService = $balanceService;
+        $this->ledgerService = $ledgerService;
     }
 
     /**
@@ -150,6 +154,10 @@ class RefundService extends BaseService
                 'status' => 'succeeded',
                 'processed_at' => now()
             ]);
+
+            // Record refund in ledger system
+            $refundModel = Refund::findById($refundId);
+            $this->ledgerService->recordRefund($refundModel);
 
             // Update merchant balance (deduct refund amount)
             $this->balanceService->subtractFromBalance(

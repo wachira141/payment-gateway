@@ -27,11 +27,17 @@ class Charge extends BaseModel
         'risk_score',
         'captured',
         'captured_at',
+        'gateway_processing_fee',
+        'platform_application_fee',
+        'gateway_code',
+        'payment_method_type',
     ];
 
     protected $casts = [
         'amount' => 'decimal:4',
         'fee_amount' => 'decimal:4',
+        'gateway_processing_fee' => 'decimal:4',
+        'platform_application_fee' => 'decimal:4',
         'payment_method_details' => 'array',
         'payment_method_data' => 'array', // Add for confirm method
         'connector_response' => 'array',
@@ -162,5 +168,13 @@ class Charge extends BaseModel
     public function getNetAmount()
     {
         return $this->amount - $this->fee_amount;
+    }
+
+    /**
+     * Create charge record
+     */
+    public static function createCharge(array $data)
+    {
+        return self::create($data);
     }
 }

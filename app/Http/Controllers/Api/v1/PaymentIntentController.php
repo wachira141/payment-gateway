@@ -21,7 +21,7 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $filters = $request->only([
                 'status',
                 'client_reference_id',
@@ -31,14 +31,16 @@ class PaymentIntentController extends Controller
 
             $paymentIntents = $this->paymentIntentService->getForMerchant($merchant, $filters);
 
+            $items = $paymentIntents->items();
+
             return response()->json([
                 'success' => true,
-                'data' => $paymentIntents->items(),
+                'data' => $items,
                 'has_more' => $paymentIntents->hasMorePages(),
-                'next_cursor' => $paymentIntents->hasMorePages() ? 
-                    optional(end($paymentIntents->items()))->intent_id : null,
+                'next_cursor' => $paymentIntents->hasMorePages()
+                    ? optional(end($items))->intent_id
+                    : null,
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -52,9 +54,9 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $requestData = $request->validated();
-            
+
             // If merchant_app_id not provided, the service will handle it
             $paymentIntent = $this->paymentIntentService->create(
                 $merchant,
@@ -66,7 +68,6 @@ class PaymentIntentController extends Controller
                 'data' => $paymentIntent,
                 'message' => 'Payment intent created successfully',
             ], 201);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -79,7 +80,7 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $paymentIntent = $this->paymentIntentService->findByIdAndMerchant($intentId, $merchant);
 
             if (!$paymentIntent) {
@@ -93,7 +94,6 @@ class PaymentIntentController extends Controller
                 'success' => true,
                 'data' => $paymentIntent,
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -107,7 +107,7 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $paymentIntent = $this->paymentIntentService->findByIdAndMerchant($intentId, $merchant);
 
             if (!$paymentIntent) {
@@ -127,7 +127,6 @@ class PaymentIntentController extends Controller
                 'data' => $confirmedIntent,
                 'message' => 'Payment intent confirmed successfully',
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -140,7 +139,7 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $paymentIntent = $this->paymentIntentService->findByIdAndMerchant($intentId, $merchant);
 
             if (!$paymentIntent) {
@@ -157,7 +156,6 @@ class PaymentIntentController extends Controller
                 'data' => $capturedIntent,
                 'message' => 'Payment intent captured successfully',
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -170,7 +168,7 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $paymentIntent = $this->paymentIntentService->findByIdAndMerchant($intentId, $merchant);
 
             if (!$paymentIntent) {
@@ -190,7 +188,6 @@ class PaymentIntentController extends Controller
                 'data' => $cancelledIntent,
                 'message' => 'Payment intent cancelled successfully',
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -203,16 +200,15 @@ class PaymentIntentController extends Controller
     {
         try {
             $merchant = $request->user()->merchant;
-            
+
             $filters = $request->only(['date_from', 'date_to']);
-            
+
             $analytics = $this->paymentIntentService->getAnalytics($merchant, $filters);
 
             return response()->json([
                 'success' => true,
                 'data' => $analytics,
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

@@ -32,6 +32,22 @@ class Refund extends BaseModel
         'settled_at' => 'datetime'
     ];
 
+    /**
+     * Get the associated charge
+     */
+    public function charge()
+    {
+        return $this->belongsTo(Charge::class);
+    }
+
+    /**
+     * Get the merchant
+     */
+    public function merchant()
+    {
+        return $this->belongsTo(Merchant::class);
+    }
+
     public static function getByChargeId(string $chargeId)
     {
         return static::where('charge_id', $chargeId)->get();

@@ -24,16 +24,23 @@ class PaymentIntentService
 {
     protected $paymentProcessor;
     protected $intentTransactionService;
-    protected $gatewayMapper;
-
+    protected $gatewayMapper; 
+    protected $chargeService;
+    protected $ledgerService;
+    
+    
     public function __construct(
         PaymentProcessorService $paymentProcessor,
         PaymentIntentTransactionService $intentTransactionService,
-        PaymentMethodGatewayMapper $gatewayMapper
-    ) {
-        $this->paymentProcessor = $paymentProcessor;
-        $this->intentTransactionService = $intentTransactionService;
-        $this->gatewayMapper = $gatewayMapper;
+        PaymentMethodGatewayMapper $gatewayMapper,
+        ChargeService $chargeService,
+        LedgerService $ledgerService,
+        ) {
+            $this->paymentProcessor = $paymentProcessor;
+            $this->intentTransactionService = $intentTransactionService;
+            $this->gatewayMapper = $gatewayMapper;
+            $this->chargeService = $chargeService;
+            $this->ledgerService = $ledgerService;
     }
 
     public function create(Merchant $merchant, array $data): PaymentIntent
@@ -64,6 +71,7 @@ class PaymentIntentService
                 'merchant_id' => $merchant->id,
                 'merchant_app_id' => $merchantAppId,
                 'customer_id' => $customerId,
+                'country_code' => $data['country'],
                 'amount' => $data['amount'],
                 'amount_received' => 0,
                 'amount_capturable' => $data['amount'],
@@ -261,9 +269,10 @@ class PaymentIntentService
             $paymentMethodType = $paymentMethodData['type'] ?? 'card';
 
             // Determine country and currency for gateway selection
-            $countryCode = $paymentMethodData['billing_details']['address']['country'] ??
-                $paymentIntent->billing_details['address']['country'] ?? 'US';
+            // $countryCode = $paymentMethodData['billing_details']['address']['country'] ??
+            //     $paymentIntent->billing_details['address']['country'] ?? 'US';
 
+            $countryCode = $paymentIntent->country_code;
             // Get appropriate gateway for this payment method
             $gateway = $this->gatewayMapper->getGatewayForPaymentMethod(
                 $paymentMethodType,
@@ -281,11 +290,11 @@ class PaymentIntentService
                 ]);
                 return false;
             }
-
+            
             // Prepare payment data for PaymentProcessorService
             $paymentData = [
                 'gateway_code' => $gateway->code,
-                'user_id' => $paymentIntent->customer ? $paymentIntent->customer->user_id : null,
+                'merchant_id' => $paymentIntent->merchant_id,
                 'payable_type' => 'payment_intent',
                 'payable_id' => $paymentIntent->id,
                 'amount' => $paymentIntent->amount,
@@ -295,17 +304,17 @@ class PaymentIntentService
                     'payment_intent_id' => $paymentIntent->intent_id,
                     'payment_method_type' => $paymentMethodType,
                 ]),
-                'phone_number' => $paymentMethodData['phone_number'] ?? null,
+                'phone_number' => $paymentMethodData['mobile_money']['phone_number'] ?? null,
             ];
 
             // Add payment method specific data
-            if ($paymentMethodType === 'mobile_money' && isset($paymentMethodData['phone_number'])) {
-                $paymentData['phone_number'] = $paymentMethodData['phone_number'];
+            if ($paymentMethodType === 'mobile_money' && isset($paymentMethodData['mobile_money']['phone_number'])) {
+                $paymentData['phone_number'] = $paymentMethodData['mobile_money']['phone_number'];
             }
 
             // Process the payment
             $result = $this->paymentProcessor->processPayment($paymentData);
-
+            
             if ($result['success']) {
                 // Store gateway data in the payment intent
                 $paymentIntent->update([
@@ -320,7 +329,7 @@ class PaymentIntentService
                     ],
                     'gateway_transaction_id' => $result['transaction_id'],
                     'gateway_payment_intent_id' => $result['payment_intent_id'] ?? null,
-                    'amount_received' => $result['amount'], 
+                    'amount_received' => $paymentIntent->amount, 
                 ]);
 
                 Log::info('Payment processing initiated successfully', [
@@ -347,6 +356,63 @@ class PaymentIntentService
             ]);
 
             return false;
+        }
+    }
+
+
+    /**
+     * Handle successful payment intent by creating charge and updating ledger
+     */
+    public function handleSuccessfulPaymentIntent($transaction, string $gatewayType, array $feeCalculation): void
+    {
+        try {
+            $paymentIntent = \App\Models\PaymentIntent::find($transaction->payable_id);
+
+            if (!$paymentIntent) {
+                Log::warning('PaymentIntent not found for transaction', [
+                    'transaction_id' => $transaction->id,
+                    'payable_id' => $transaction->payable_id
+                ]);
+                return;
+            }
+
+            // Create charge from successful payment intent
+            $charge = $this->chargeService->createChargeFromPaymentIntent($paymentIntent->id, [
+                'payment_intent_id' => $paymentIntent->id,
+                'merchant_id' => $paymentIntent->merchant_id,
+                'amount' => $transaction->amount,
+                'currency' => $transaction->currency,
+                'status' => 'succeeded',
+                'payment_method_type' => $transaction->payment_method_type ?? 'unknown',
+                'payment_method_details' => [],
+                'connector_name' => $gatewayType,
+                'connector_charge_id' => $transaction->gateway_transaction_id,
+                'connector_response' => $transaction->gateway_response ?? [],
+                'fee_amount' => 0, // Will be calculated by ledger service
+                'captured' => true,
+                'captured_at' => now(),
+                'gateway_code' => $transaction->gateway_code,
+                'gateway_processing_fee' => 0, // Will be calculated by ledger service
+                'platform_application_fee' => 0, // Will be calculated by ledger service
+            ]);
+
+            // Record payment in ledger and update merchant balance
+            $this->ledgerService->recordPayment($charge, $feeCalculation);
+
+            Log::info('Charge created and ledger updated for successful payment intent', [
+                'charge_id' => $charge->charge_id,
+                'payment_intent_id' => $paymentIntent->intent_id,
+                'transaction_id' => $transaction->id,
+                'amount' => $charge->amount,
+                'currency' => $charge->currency,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to handle successful payment intent', [
+                'transaction_id' => $transaction->id,
+                'payable_id' => $transaction->payable_id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
         }
     }
 }

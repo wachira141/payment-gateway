@@ -22,6 +22,7 @@ class DatabaseSeeder extends Seeder
             CountrySeeder::class,
             PaymentGatewaySeeder::class,
             LanguagesSeeder::class,
+            DefaultGatewayPricingSeeder::class,
         ]);
     }
 }

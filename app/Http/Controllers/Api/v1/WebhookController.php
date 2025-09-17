@@ -8,6 +8,8 @@ use App\Models\PaymentGateway;
 use App\Services\PaymentProcessorService;
 use App\Services\CommissionCalculationService;
 use App\Services\WebhookProcessingService;
+use App\Services\GatewayPricingService;
+use App\Services\PaymentIntentService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
@@ -19,20 +21,27 @@ class WebhookController extends Controller
     protected $commissionCalculationService;
     protected $webhookProcessingService;
     protected $purchasedServiceService;
+    protected $gatewayPricingService;
+    protected $paymentIntentService;
     protected $goalRequestService;
     protected $paymentProcessor;
     protected $mealPlanService;
     protected $bookingService;
     protected $services;
+   
 
     public function __construct(
         PaymentProcessorService $paymentProcessor,
         CommissionCalculationService $commissionCalculationService,
         WebhookProcessingService $webhookProcessingService,
+        GatewayPricingService $gatewayPricingService,
+        PaymentIntentService $paymentIntentService
     ) {
-        $this->paymentProcessor = $paymentProcessor;
         $this->commissionCalculationService = $commissionCalculationService;
         $this->webhookProcessingService = $webhookProcessingService;
+        $this->gatewayPricingService = $gatewayPricingService;
+        $this->paymentIntentService = $paymentIntentService;
+        $this->paymentProcessor = $paymentProcessor;
     }
 
     /**
@@ -78,7 +87,7 @@ class WebhookController extends Controller
     /**
      * Process webhook from any gateway
      */
-    private function processWebhook(Request $request, string $gatewayType, string $eventType=null)
+    private function processWebhook(Request $request, string $gatewayType, string | null  $eventType = null)
     {
         try {
             // Get gateway
@@ -120,52 +129,18 @@ class WebhookController extends Controller
 
             if ($result['success']) {
                 $webhook->markProcessed();
-                // process the commission for the platform
-                $this->commissionCalculationService->processCommission($result['transaction']);
-                //switchcase for payable type
-                $data = [
-                    'payment_method' => $gatewayType,
-                    'payment_reference' => $result['transaction']->gateway_transaction_id,
-                    'price' => $result['transaction']->amount,
-                    'currency' => $result['transaction']->currency,
-                    'payment_status' => 1,
-                    'payment_completed_at' => now()
-                ];
 
-                switch (class_basename($result['transaction']->payable_type)) {
-                    case 'GoalRequest':
-                        $data['payment_date'] = now();
-                        $this->goalRequestService->processGoalRequestPayment(
-                            $result['transaction']->payable_id,
-                            $data
-                        );
-                        break;
-                    case 'MealPlanRequest':
-                        $this->mealPlanService->processMealPlanPayment(
-                            $result['transaction']->payable_id,
-                            $data
-                        );
-                    case 'Service':
-                        $purchasedService = $this->services->getServiceById($result['transaction']->payable_id);
+                // Ensure transaction has gateway information
+                $this->enrichTransactionWithGatewayInfo($result['transaction'], $gatewayType);
 
-                        if ($purchasedService) {
-                            // get the reservation if the service had a reservation
-                            $slotReservation =  $this->bookingService->getActiveReservationForService($result['transaction']->user_id, $result['transaction']->payable_id);
-                            $reservedSlot = null;
-                            if ($slotReservation) $reservedSlot = $slotReservation->id;
+                // Calculate gateway-based fees and commission
+                $feeCalculation = $this->gatewayPricingService->calculateFeesForTransaction($result['transaction']);
 
-                            $purchasedService = $this->purchasedServiceService->processPurchase(
-                                $result['transaction']->user_id,
-                                $result['transaction']->payable_id,
-                                $reservedSlot,
-                                $gatewayType ?? 'direct',
-                                $result['gateway_response'] ?? null
-                            );
-                        }
-                        break;
-                    default:
-                        $webhook->payable_type = null;
-                }
+                // Process the commission for the platform using gateway-based pricing
+                $this->commissionCalculationService->processCommission($result['transaction'], $feeCalculation);
+
+                // Create charge and handle ledger balancing for successful payment intents
+                $this->paymentIntentService->handleSuccessfulPaymentIntent($result['transaction'], $gatewayType, $feeCalculation);
 
                 return response()->json(['success' => true]);
             } else {
@@ -183,6 +158,7 @@ class WebhookController extends Controller
             return response()->json(['error' => 'Internal error'], 500);
         }
     }
+
 
     /**
      * Determine event type from webhook payload
@@ -281,7 +257,7 @@ class WebhookController extends Controller
         }
     }
 
-     /**
+    /**
      * Get webhook logs
      */
     public function getLogs(Request $request)
@@ -311,8 +287,8 @@ class WebhookController extends Controller
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('webhook_id', 'like', "%{$search}%")
-                  ->orWhere('gateway_event_id', 'like', "%{$search}%")
-                  ->orWhere('event_type', 'like', "%{$search}%");
+                    ->orWhere('gateway_event_id', 'like', "%{$search}%")
+                    ->orWhere('event_type', 'like', "%{$search}%");
             });
         }
 
@@ -349,7 +325,7 @@ class WebhookController extends Controller
     {
         try {
             $webhook = $this->webhookProcessingService->getWebhookById($webhookId);
-            
+
             return response()->json([
                 'success' => true,
                 'data' => $webhook,
@@ -370,7 +346,7 @@ class WebhookController extends Controller
         try {
             $timeframe = $request->get('timeframe', '24h');
             $stats = $this->webhookProcessingService->getWebhookStats($timeframe);
-            
+
             return response()->json([
                 'success' => true,
                 'data' => $stats,
@@ -391,7 +367,7 @@ class WebhookController extends Controller
         try {
             $webhookIds = $request->input('webhook_ids', []);
             $results = $this->webhookProcessingService->bulkRetryWebhooks($webhookIds);
-            
+
             return response()->json([
                 'success' => true,
                 'data' => $results,
@@ -411,7 +387,7 @@ class WebhookController extends Controller
     {
         try {
             $eventTypes = $this->webhookProcessingService->getAvailableEventTypes();
-            
+
             return response()->json([
                 'success' => true,
                 'data' => $eventTypes,
@@ -431,7 +407,7 @@ class WebhookController extends Controller
     {
         try {
             $replayWebhook = $this->webhookProcessingService->replayWebhook($webhookId);
-            
+
             return response()->json([
                 'success' => true,
                 'data' => $replayWebhook,
@@ -441,6 +417,37 @@ class WebhookController extends Controller
                 'success' => false,
                 'message' => $e->getMessage(),
             ], $e->getCode() ?: 500);
+        }
+    }
+
+    /**
+     * Enrich transaction with gateway information from webhook context
+     */
+    private function enrichTransactionWithGatewayInfo($transaction, string $gatewayType): void
+    {
+        // Map gateway type to standardized codes
+        $gatewayMapping = [
+            'stripe' => ['gateway_code' => 'stripe', 'payment_method_type' => 'card'],
+            'mpesa' => ['gateway_code' => 'mpesa', 'payment_method_type' => 'mobile_money'],
+            'telebirr' => ['gateway_code' => 'telebirr', 'payment_method_type' => 'mobile_money'],
+        ];
+
+        $mapping = $gatewayMapping[$gatewayType] ?? [
+            'gateway_code' => $gatewayType,
+            'payment_method_type' => 'unknown'
+        ];
+
+        // Update transaction with gateway information if not already set
+        $updateData = [];
+        if (!$transaction->gateway_code) {
+            $updateData['gateway_code'] = $mapping['gateway_code'];
+        }
+        if (!$transaction->payment_method_type) {
+            $updateData['payment_method_type'] = $mapping['payment_method_type'];
+        }
+
+        if (!empty($updateData)) {
+            $transaction->update($updateData);
         }
     }
 }

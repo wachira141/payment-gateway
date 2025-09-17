@@ -28,6 +28,15 @@ class Country extends BaseModel
         'is_active' => 'boolean',
     ];
 
+
+    /**
+     * Relationships to payment intents
+     */
+    public function paymentIntents()
+    {
+        return $this->hasMany(PaymentIntent::class, 'country_code', 'code');
+    }
+
     /**
      * Scope to get only active countries
      */

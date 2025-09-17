@@ -69,7 +69,7 @@ class ChargeService extends BaseService
     /**
      * Create a new charge from payment intent
      */
-    public function createChargeFromPaymentIntent(string $paymentIntentId, array $data = []): array
+    public function createChargeFromPaymentIntent(string $paymentIntentId, array $data): Charge
     {
         $paymentIntent = PaymentIntent::findById($paymentIntentId);
         
@@ -81,23 +81,7 @@ class ChargeService extends BaseService
             throw new \Exception('Payment intent is not in capturable state');
         }
 
-        $chargeData = [
-            'id' => 'ch_' . Str::random(24),
-            'merchant_id' => $paymentIntent['merchant_id'],
-            'payment_intent_id' => $paymentIntentId,
-            'amount' => $data['amount'] ?? $paymentIntent['amount'],
-            'currency' => $paymentIntent['currency'],
-            'status' => 'pending',
-            'payment_method_id' => $paymentIntent['payment_method_id'],
-            'description' => $data['description'] ?? $paymentIntent['description'],
-            'metadata' => array_merge($paymentIntent['metadata'] ?? [], $data['metadata'] ?? []),
-            'application_fee_amount' => $this->commissionService->calculateCommission(
-                $paymentIntent['merchant_id'],
-                $data['amount'] ?? $paymentIntent['amount']
-            )
-        ];
-
-        return Charge::create($chargeData);
+        return Charge::createCharge($data);
     }
 
     /**

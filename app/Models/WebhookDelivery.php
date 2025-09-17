@@ -16,7 +16,9 @@ class WebhookDelivery extends BaseModel
         'status',
         'error_message',
         'next_retry_at',
-        'delivered_at'
+        'delivered_at',
+        'correlation_id',
+        'source_webhook_id'
     ];
 
     protected $casts = [
@@ -55,7 +57,7 @@ class WebhookDelivery extends BaseModel
     public function markAsFailed(string $error, int $statusCode = null, string $responseBody = null): void
     {
         $this->increment('delivery_attempts');
-        
+
         $nextRetryAt = null;
         if ($this->delivery_attempts < 5) { // Max 5 attempts
             $delayMinutes = min(pow(2, $this->delivery_attempts - 1) * 5, 60); // Exponential backoff, max 1 hour

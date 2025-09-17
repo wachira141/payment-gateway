@@ -16,7 +16,7 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->string('name')->comment('Gateway name (Stripe, M-Pesa, Telebirr)');
             $table->string('code')->unique()->comment('Unique gateway code');
-            $table->string('type')->comment('Gateway type (stripe, mpesa, telebirr)');
+            $table->string('type')->comment('Gateway type (card, mobile_money, bank)');
             $table->json('supported_countries')->comment('Array of supported country codes');
             $table->json('supported_currencies')->comment('Array of supported currency codes');
             $table->string('icon')->nullable()->comment('Gateway icon/logo');

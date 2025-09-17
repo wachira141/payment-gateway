@@ -30,6 +30,14 @@ class Customer extends BaseModel
     }
 
     /**
+     * Get the payment transactions for this customer.
+     */
+    public function paymentTransactions(): HasMany
+    {
+        return $this->hasMany(PaymentTransaction::class);
+    }
+
+    /**
      * Get the payment intents for this customer.
      */
     public function paymentIntents(): HasMany
@@ -170,7 +178,6 @@ class Customer extends BaseModel
         if (!$customer && !empty($customerData['external_id'])) {
             $customer = self::findByExternalIdAndMerchant($customerData['external_id'], $merchantId);
         }
-        
         if (!$customer) {
             $customer = self::create([
                 'merchant_id' => $merchantId,

@@ -10,33 +10,37 @@ use Illuminate\Support\Facades\Log;
 class CommissionCalculationService
 {
     protected $balanceService;
+    protected $gatewayPricingService;
 
-    public function __construct(BalanceService $balanceService)
+    public function __construct(BalanceService $balanceService, GatewayPricingService $gatewayPricingService)
     {
         $this->balanceService = $balanceService;
+        $this->gatewayPricingService = $gatewayPricingService;
     }
 
     /**
-     * Calculate and record commission for a payment transaction
+     * Calculate and record commission for a payment transaction using gateway-based pricing
      */
-    public function processCommission(PaymentTransaction $transaction)
+    public function processCommission(PaymentTransaction $transaction, $feeCalculation)
     {
         if ($transaction->commission_processed) {
-            return null; // Already processed
+            return $transaction; // Already processed
         }
 
-        // Determine service type from payable
-        $serviceType = $this->getServiceTypeFromPayable($transaction->payable_type);
+        // Ensure we have gateway information
+        if (!$transaction->gateway_code || !$transaction->payment_method_type) {
+            Log::warning('Missing gateway information for commission calculation', [
+                'transaction_id' => $transaction->id,
+                'gateway_code' => $transaction->gateway_code,
+                'payment_method_type' => $transaction->payment_method_type,
+            ]);
+            
+            // Try to infer from payment gateway if possible
+            $this->inferGatewayInfo($transaction);
+        }
         
-        // Get commission setting
-        $commissionSetting = $this->getCommissionSetting($serviceType);
-        
-        // Calculate commission
-        $commissionAmount = $commissionSetting->calculateCommission($transaction->amount);
-        $providerAmount = $transaction->amount - $commissionAmount;
-        
-        // Update transaction
-        $transaction = $this->updateTransactionCommission($transaction, $commissionAmount, $providerAmount);
+        // Update transaction with gateway-based commission
+        $transaction = $this->updateTransactionCommission($transaction, $feeCalculation);
        
         return $transaction;
     }
@@ -94,14 +98,50 @@ class CommissionCalculationService
     }
 
     /**
-     * Update transaction with commission data
+     * Update transaction with gateway-based commission data
      */
-    private function updateTransactionCommission($transaction, $commissionAmount, $providerAmount)
+    private function updateTransactionCommission(PaymentTransaction $transaction, array $feeCalculation): PaymentTransaction
     {
-        return $transaction->updateRecord([
-            'commission_amount' => $commissionAmount,
-            'provider_amount' => $providerAmount,
+        $transaction->update([
+            'commission_amount' => $feeCalculation['commission_amount'],
+            'provider_amount' => $feeCalculation['provider_amount'],
             'commission_processed' => true,
+            'commission_breakdown' => $feeCalculation,
+        ]);
+
+        return $transaction->fresh();
+    }
+
+    /**
+     * Infer gateway information from payment gateway relationship
+     */
+    private function inferGatewayInfo(PaymentTransaction $transaction): void
+    {
+        if (!$transaction->paymentGateway) {
+            $transaction->load('paymentGateway');
+        }
+
+        $gateway = $transaction->paymentGateway;
+        if (!$gateway) {
+            Log::error('No payment gateway found for transaction', [
+                'transaction_id' => $transaction->id,
+                'payment_gateway_id' => $transaction->payment_gateway_id,
+            ]);
+            return;
+        }
+
+        // Map gateway type to standardized gateway code and payment method
+        $gatewayMapping = [
+            'stripe' => ['gateway_code' => 'stripe', 'payment_method_type' => 'card'],
+            'mpesa' => ['gateway_code' => 'mpesa', 'payment_method_type' => 'mobile_money'],
+            'telebirr' => ['gateway_code' => 'telebirr', 'payment_method_type' => 'mobile_money'],
+        ];
+
+        $mapping = $gatewayMapping[$gateway->type] ?? ['gateway_code' => $gateway->type, 'payment_method_type' => 'unknown'];
+
+        $transaction->update([
+            'gateway_code' => $mapping['gateway_code'],
+            'payment_method_type' => $mapping['payment_method_type'],
         ]);
     }
 
@@ -116,7 +156,9 @@ class CommissionCalculationService
         
         foreach ($transactions as $transaction) {
             try {
-                $earning = $this->processCommission($transaction);
+                $feeCalculation = $this->gatewayPricingService->calculateFeesForTransaction($transaction);
+
+                $earning = $this->processCommission($transaction, $feeCalculation);
                 if ($earning) {
                     $processed[] = $earning;
                 }

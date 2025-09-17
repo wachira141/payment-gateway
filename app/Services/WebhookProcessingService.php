@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Services;
 
 use App\Models\PaymentWebhook;
@@ -8,6 +9,8 @@ use App\Services\MpesaPaymentService;
 use App\Events\PaymentIntentSucceeded;
 use App\Events\PaymentIntentFailed;
 use App\Events\PaymentIntentCancelled;
+use App\Events\PaymentIntentCaptured;
+use App\Events\PaymentIntentConfirmed;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -48,10 +51,9 @@ class WebhookProcessingService
                 'success' => true,
                 'data' => $result
             ];
-
         } catch (Exception $e) {
             DB::rollback();
-            
+
             Log::error('Webhook processing failed', [
                 'webhook_id' => $webhook->webhook_id,
                 'error' => $e->getMessage()
@@ -71,50 +73,54 @@ class WebhookProcessingService
     {
         $payload = $webhook->payload;
         $gatewayType = $webhook->paymentGateway->type;
-        
+
         // Handle M-Pesa specific webhooks
         if ($gatewayType === 'mpesa') {
             return $this->processMpesaWebhook($webhook, $payload);
         }
-        
+
         // Handle other gateway webhooks
         switch ($webhook->event_type) {
             case 'payment.completed':
                 return $this->handlePaymentCompleted($webhook, $payload);
-                
+
             case 'payment.failed':
                 return $this->handlePaymentFailed($webhook, $payload);
-                
+
             case 'payment.pending':
                 return $this->handlePaymentPending($webhook, $payload);
-                
+
             case 'payment.cancelled':
                 return $this->handlePaymentCancelled($webhook, $payload);
-                
+
             case 'disbursement.completed':
                 return $this->handleDisbursementCompleted($webhook, $payload);
-                
+
             case 'disbursement.failed':
                 return $this->handleDisbursementFailed($webhook, $payload);
 
-            // Payment Intent specific events
+                // Payment Intent specific events
             case 'payment_intent.succeeded':
             case 'payment_intent.payment_succeeded':
                 return $this->handlePaymentIntentSucceeded($webhook, $payload);
-                
+
             case 'payment_intent.failed':
             case 'payment_intent.payment_failed':
                 return $this->handlePaymentIntentFailed($webhook, $payload);
-                
+
             case 'payment_intent.cancelled':
                 return $this->handlePaymentIntentCancelled($webhook, $payload);
+            case 'payment_intent.confirmed':
+                return $this->handlePaymentIntentConfirmed($webhook, $payload);
 
+            case 'payment_intent.captured':
+                return $this->handlePaymentIntentCaptured($webhook, $payload);
             default:
                 Log::warning('Unhandled webhook event type', [
                     'event_type' => $webhook->event_type,
                     'webhook_id' => $webhook->webhook_id
                 ]);
-                
+
                 return ['status' => 'ignored'];
         }
     }
@@ -129,17 +135,17 @@ class WebhookProcessingService
         if (isset($payload['Result'])) {
             return $this->processMpesaB2CCallback($webhook, $payload);
         }
-        
+
         // Check if it's STK Push callback
         if (isset($payload['Body']['stkCallback'])) {
             return $this->processMpesaSTKCallback($webhook, $payload);
         }
-        
+
         Log::warning('Unknown M-Pesa webhook format', [
             'webhook_id' => $webhook->webhook_id,
             'payload_keys' => array_keys($payload)
         ]);
-        
+
         return ['status' => 'ignored', 'reason' => 'unknown_format'];
     }
 
@@ -150,30 +156,30 @@ class WebhookProcessingService
     {
         // Use MpesaPaymentService to process the callback
         $result = $this->mpesaService->processB2CCallback($payload);
-        
+
         if (!$result['success']) {
             throw new Exception('Failed to process M-Pesa B2C callback: ' . $result['error']);
         }
-        
+
         $callbackData = $result['data'];
         $conversationId = $callbackData['conversation_id'];
         $resultCode = $callbackData['result_code'];
-        
+
         // Find disbursement by conversation ID
         $disbursement = Disbursement::where('gateway_transaction_id', $conversationId)
             ->orWhere('gateway_disbursement_id', $conversationId)
             ->first();
-        
+
         if (!$disbursement) {
             Log::warning('Disbursement not found for B2C callback', [
                 'conversation_id' => $conversationId,
                 'webhook_id' => $webhook->webhook_id,
                 'payload' => json_encode($payload)
             ]);
-            
+
             return ['status' => 'ignored', 'reason' => 'disbursement_not_found'];
         }
-        
+
         if ($resultCode == 0) {
             // Success
             $disbursement->update([
@@ -182,9 +188,9 @@ class WebhookProcessingService
                 'gateway_response' => $callbackData,
                 'gateway_disbursement_id' => $callbackData['transaction_receipt'] ?? $conversationId
             ]);
-            
+
             $this->notifyProvider($disbursement, 'completed');
-            
+
             return [
                 'status' => 'processed',
                 'disbursement_id' => $disbursement->id,
@@ -193,16 +199,16 @@ class WebhookProcessingService
         } else {
             // Failed
             $errorMessage = $callbackData['result_desc'] ?? 'B2C payment failed';
-            
+
             $disbursement->update([
                 'status' => 'failed',
                 'failed_at' => now(),
                 'failure_reason' => $errorMessage,
                 'gateway_response' => $callbackData
             ]);
-            
+
             $this->notifyProvider($disbursement, 'failed');
-            
+
             return [
                 'status' => 'processed',
                 'disbursement_id' => $disbursement->id,
@@ -218,13 +224,13 @@ class WebhookProcessingService
     {
         // Use MpesaPaymentService to process the callback
         $result = $this->mpesaService->processCallback($payload);
-        
+
         if (!$result['success']) {
             throw new Exception('Failed to process M-Pesa STK callback: ' . $result['error']);
         }
-        
+
         $callbackData = $result['data'];
-        
+
         // This would typically update a payment record, not disbursement
         // For now, just log and return processed status
         Log::info('STK Push callback processed', [
@@ -232,7 +238,7 @@ class WebhookProcessingService
             'checkout_request_id' => $callbackData['checkout_request_id'],
             'result_code' => $callbackData['result_code']
         ]);
-        
+
         return [
             'status' => 'processed',
             'action' => 'stk_callback_processed'
@@ -245,7 +251,7 @@ class WebhookProcessingService
     protected function handlePaymentCompleted(PaymentWebhook $webhook, array $payload): array
     {
         $transactionId = $payload['transaction_id'] ?? $payload['reference'] ?? null;
-        
+
         if (!$transactionId) {
             throw new Exception('Missing transaction ID in webhook payload');
         }
@@ -259,7 +265,7 @@ class WebhookProcessingService
                 'transaction_id' => $transactionId,
                 'webhook_id' => $webhook->webhook_id
             ]);
-            
+
             return ['status' => 'ignored', 'reason' => 'disbursement_not_found'];
         }
 
@@ -292,7 +298,7 @@ class WebhookProcessingService
     protected function handlePaymentFailed(PaymentWebhook $webhook, array $payload): array
     {
         $transactionId = $payload['transaction_id'] ?? $payload['reference'] ?? null;
-        
+
         if (!$transactionId) {
             throw new Exception('Missing transaction ID in webhook payload');
         }
@@ -363,7 +369,7 @@ class WebhookProcessingService
     protected function handlePaymentPending(PaymentWebhook $webhook, array $payload): array
     {
         $transactionId = $payload['transaction_id'] ?? $payload['reference'] ?? null;
-        
+
         if (!$transactionId) {
             throw new Exception('Missing transaction ID in webhook payload');
         }
@@ -391,7 +397,7 @@ class WebhookProcessingService
     protected function handlePaymentCancelled(PaymentWebhook $webhook, array $payload): array
     {
         $transactionId = $payload['transaction_id'] ?? $payload['reference'] ?? null;
-        
+
         if (!$transactionId) {
             throw new Exception('Missing transaction ID in webhook payload');
         }
@@ -440,7 +446,7 @@ class WebhookProcessingService
     {
         // Get the gateway configuration
         $gateway = $webhook->paymentGateway;
-        
+
         if (!$gateway) {
             Log::warning('Gateway not found for webhook', [
                 'webhook_id' => $webhook->webhook_id
@@ -452,10 +458,10 @@ class WebhookProcessingService
         switch ($gateway->type) {
             case 'mpesa':
                 return $this->verifyMpesaSignature($webhook, $gateway);
-                
+
             case 'bank_transfer':
                 return $this->verifyBankTransferSignature($webhook, $gateway);
-                
+
             default:
                 Log::warning('Unknown gateway type for signature verification', [
                     'gateway_type' => $gateway->type
@@ -497,7 +503,7 @@ class WebhookProcessingService
         ];
 
         $errorCode = $payload['error_code'] ?? $payload['failure_code'] ?? '';
-        
+
         return !in_array($errorCode, $nonRetryableErrors);
     }
 
@@ -514,10 +520,10 @@ class WebhookProcessingService
                 'provider_id' => $disbursement->user_id,
                 'status' => $status
             ]);
-            
+
             // TODO: Implement actual notification service
             // NotificationService::notifyProvider($disbursement, $status);
-            
+
         } catch (Exception $e) {
             Log::error('Failed to notify provider', [
                 'disbursement_id' => $disbursement->id,
@@ -528,17 +534,17 @@ class WebhookProcessingService
 
 
 
-     /**
+    /**
      * Get webhook by ID with related data
      */
     public function getWebhookById(string $webhookId)
     {
         $webhook = PaymentWebhook::getWebhookWithGateway($webhookId);
-        
+
         if (!$webhook) {
             throw new \Exception('Webhook not found', 404);
         }
-        
+
         return $webhook;
     }
 
@@ -548,16 +554,16 @@ class WebhookProcessingService
     public function getWebhookStats(string $timeframe): array
     {
         $startDate = $this->calculateStartDate($timeframe);
-        
+
         $stats = PaymentWebhook::getStatsByTimeframe($startDate);
-        
+
         // Calculate success rate
         if ($stats['total'] > 0) {
             $stats['success_rate'] = round(($stats['processed'] / $stats['total']) * 100, 2);
         } else {
             $stats['success_rate'] = 0;
         }
-        
+
         return $stats;
     }
 
@@ -567,17 +573,17 @@ class WebhookProcessingService
     public function bulkRetryWebhooks(array $webhookIds): array
     {
         $webhooks = PaymentWebhook::getRetryableWebhooks($webhookIds);
-        
+
         $results = [
             'total' => count($webhookIds),
             'retried' => 0,
             'failed' => 0
         ];
-        
+
         foreach ($webhooks as $webhook) {
             try {
                 $result = $this->processWebhook($webhook);
-                
+
                 if ($result['success']) {
                     $webhook->markProcessed();
                     $results['retried']++;
@@ -590,7 +596,7 @@ class WebhookProcessingService
                 $results['failed']++;
             }
         }
-        
+
         return $results;
     }
 
@@ -608,11 +614,11 @@ class WebhookProcessingService
     public function replayWebhook(string $webhookId)
     {
         $webhook = PaymentWebhook::findByWebhookId($webhookId);
-        
+
         if (!$webhook) {
             throw new \Exception('Webhook not found', 404);
         }
-        
+
         $replayData = [
             'payment_gateway_id' => $webhook->payment_gateway_id,
             'webhook_id' => Str::uuid(),
@@ -621,7 +627,7 @@ class WebhookProcessingService
             'payload' => $webhook->payload,
             'status' => 'pending',
         ];
-        
+
         return PaymentWebhook::createWebhook($replayData);
     }
 
@@ -630,7 +636,7 @@ class WebhookProcessingService
      */
     private function calculateStartDate(string $timeframe): \Carbon\Carbon
     {
-        return match($timeframe) {
+        return match ($timeframe) {
             '1h' => now()->subHour(),
             '24h' => now()->subDay(),
             '7d' => now()->subWeek(),
@@ -639,19 +645,19 @@ class WebhookProcessingService
         };
     }
 
-      /**
+    /**
      * Handle payment intent succeeded webhook
      */
     protected function handlePaymentIntentSucceeded(PaymentWebhook $webhook, array $payload): array
     {
         $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
-        
+
         if (!$paymentIntent) {
             Log::warning('Payment intent not found for succeeded webhook', [
                 'webhook_id' => $webhook->webhook_id,
                 'payload' => $payload
             ]);
-            
+
             return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
         }
 
@@ -683,7 +689,7 @@ class WebhookProcessingService
     protected function handlePaymentIntentFailed(PaymentWebhook $webhook, array $payload): array
     {
         $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
-        
+
         if (!$paymentIntent) {
             return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
         }
@@ -718,7 +724,7 @@ class WebhookProcessingService
     protected function handlePaymentIntentCancelled(PaymentWebhook $webhook, array $payload): array
     {
         $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
-        
+
         if (!$paymentIntent) {
             return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
         }
@@ -747,13 +753,83 @@ class WebhookProcessingService
         ];
     }
 
+
+    /**
+     * Handle payment intent confirmed webhook
+     */
+    protected function handlePaymentIntentConfirmed(PaymentWebhook $webhook, array $payload): array
+    {
+        $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
+        
+        if (!$paymentIntent) {
+            return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
+        }
+
+        // Update payment intent status
+        $paymentIntent->updateStatus('confirmed', [
+            'confirmed_at' => now(),
+            'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
+        ]);
+
+        // Fire event for webhooks
+        PaymentIntentConfirmed::dispatch($paymentIntent->fresh());
+
+        Log::info('Payment intent confirmed via webhook', [
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'webhook_id' => $webhook->webhook_id,
+            'gateway_transaction_id' => $payload['transaction_id'] ?? null,
+        ]);
+
+        return [
+            'status' => 'processed',
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'action' => 'confirmed'
+        ];
+    }
+
+    /**
+     * Handle payment intent captured webhook
+     */
+    protected function handlePaymentIntentCaptured(PaymentWebhook $webhook, array $payload): array
+    {
+        $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
+        
+        if (!$paymentIntent) {
+            return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
+        }
+
+        $capturedAmount = $payload['amount_captured'] ?? $payload['amount'] ?? $paymentIntent->amount;
+
+        // Update payment intent status
+        $paymentIntent->updateStatus('captured', [
+            'captured_at' => now(),
+            'amount_captured' => $capturedAmount,
+            'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
+        ]);
+
+        // Fire event for webhooks
+        PaymentIntentCaptured::dispatch($paymentIntent->fresh());
+
+        Log::info('Payment intent captured via webhook', [
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'webhook_id' => $webhook->webhook_id,
+            'amount_captured' => $capturedAmount,
+        ]);
+
+        return [
+            'status' => 'processed',
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'action' => 'captured'
+        ];
+    }
+
     /**
      * Find payment intent from webhook data
      */
     protected function findPaymentIntentFromWebhook(PaymentWebhook $webhook, array $payload): ?PaymentIntent
     {
         // Try multiple ways to identify the payment intent
-        
+
         // 1. By gateway transaction ID
         if (!empty($payload['transaction_id'])) {
             $paymentIntent = PaymentIntent::where('gateway_transaction_id', $payload['transaction_id'])->first();

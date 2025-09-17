@@ -10,12 +10,19 @@ use Illuminate\Pagination\LengthAwarePaginator;
 class CustomerService
 {
     /**
-     * Get paginated customers for a merchant with filtering and search.
+     * Get paginated customers for a merchant with minimal data for listing.
      */
     public function getCustomersForMerchant(Merchant $merchant, array $params = []): LengthAwarePaginator
     {
         $query = Customer::forMerchant($merchant->id)
-                        ->with(['paymentMethods', 'paymentIntents']);
+                        ->selectRaw('
+                            customers.*,
+                            (SELECT COUNT(*) FROM customer_payment_methods WHERE customer_id = customers.id) as payment_methods_count,
+                            (SELECT COUNT(*) FROM payment_intents WHERE customer_id = customers.id) as payment_intents_count,
+                            (SELECT COALESCE(SUM(amount), 0) FROM payment_intents WHERE customer_id = customers.id AND status = "succeeded") as total_spent,
+                            (SELECT MAX(created_at) FROM payment_intents WHERE customer_id = customers.id AND status = "succeeded") as last_payment_date,
+                            (SELECT COUNT(*) > 0 FROM customer_payment_methods WHERE customer_id = customers.id AND verified_at IS NOT NULL) as has_verified_methods
+                        ');
 
         // Apply search
         if (!empty($params['search'])) {
@@ -55,12 +62,60 @@ class CustomerService
     }
 
     /**
+     * Get paginated payment intents for a specific customer.
+     */
+    public function getCustomerPaymentIntents(Customer $customer, array $params = []): LengthAwarePaginator
+    {
+        $query = $customer->paymentIntents();
+
+        // Apply search
+        if (!empty($params['search'])) {
+            $query->where(function($q) use ($params) {
+                $q->where('description', 'like', '%' . $params['search'] . '%')
+                  ->orWhere('intent_id', 'like', '%' . $params['search'] . '%')
+                  ->orWhere('amount', 'like', '%' . $params['search'] . '%');
+            });
+        }
+
+        // Apply status filter
+        if (!empty($params['status'])) {
+            $query->where('status', $params['status']);
+        }
+
+        // Apply date filters
+        if (!empty($params['date_from'])) {
+            $query->where('created_at', '>=', $params['date_from']);
+        }
+
+        if (!empty($params['date_to'])) {
+            $query->where('created_at', '<=', $params['date_to'] . ' 23:59:59');
+        }
+
+        // Apply amount filters
+        if (!empty($params['amount_min'])) {
+            $query->where('amount', '>=', $params['amount_min']);
+        }
+
+        if (!empty($params['amount_max'])) {
+            $query->where('amount', '<=', $params['amount_max']);
+        }
+
+        // Apply sorting
+        $sortBy = $params['sort_by'] ?? 'created_at';
+        $sortDirection = $params['sort_direction'] ?? 'desc';
+        $query->orderBy($sortBy, $sortDirection);
+
+        // Paginate results
+        $limit = min($params['limit'] ?? 20, 50);
+        return $query->paginate($limit);
+    }
+
+    /**
      * Get a specific customer for a merchant with relationships.
      */
-    public function getCustomerForMerchant(Merchant $merchant, int $customerId): ?Customer
+    public function getCustomerForMerchant(Merchant $merchant, string $customerId): ?Customer
     {
         return Customer::forMerchant($merchant->id)
-                      ->with(['paymentMethods', 'paymentIntents'])
                       ->find($customerId);
     }
 

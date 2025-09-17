@@ -17,6 +17,7 @@ class CreatePaymentIntentRequest extends FormRequest
         return [
             'amount' => ['required', 'numeric', 'min:1'],
             'currency' => ['required', 'string', 'size:3', 'uppercase'],
+            'country' => ['required', 'string', 'size:2', 'uppercase'],
             'capture_method' => ['sometimes', Rule::in(['automatic', 'manual'])],
             'payment_method_types' => ['sometimes', 'array'],
             'payment_method_types.*' => ['string', Rule::in(['card', 'mobile_money', 'bank_transfer', 'ussd'])],

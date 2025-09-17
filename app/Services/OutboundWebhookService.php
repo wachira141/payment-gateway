@@ -7,24 +7,25 @@ use App\Models\WebhookDelivery;
 use App\Jobs\SendOutboundWebhookJob;
 use Illuminate\Support\Facades\Log;
 
+
 class OutboundWebhookService extends BaseService
 {
     /**
-     * Send webhook for an event to all subscribed endpoints
+     * Send webhook for specific event with optional correlation tracking
      */
-    public function sendWebhookForEvent(string $appId, string $eventType, array $payload): void
+    public function sendWebhookForEvent(string $appId, string $eventType, array $payload, string $correlationId = null): void
     {
         $webhooks = AppWebhook::getActiveForEvent($appId, $eventType);
-
+        
         foreach ($webhooks as $webhook) {
-            $this->dispatchWebhook($webhook, $eventType, $payload);
+            $this->dispatchWebhook($webhook, $eventType, $payload, $correlationId);
         }
     }
 
     /**
-     * Dispatch a webhook delivery job
+     * Dispatch webhook delivery job with correlation tracking
      */
-    public function dispatchWebhook(AppWebhook $webhook, string $eventType, array $payload): WebhookDelivery
+    public function dispatchWebhook(AppWebhook $webhook, string $eventType, array $payload, string $correlationId = null): WebhookDelivery
     {
         // Create delivery record
         $delivery = WebhookDelivery::create([
@@ -32,6 +33,8 @@ class OutboundWebhookService extends BaseService
             'event_type' => $eventType,
             'payload' => $payload,
             'status' => 'pending',
+            'correlation_id' => $correlationId,
+            'source_webhook_id' => $payload['source_webhook_id'] ?? null,
         ]);
 
         // Dispatch job to send webhook
@@ -42,6 +45,7 @@ class OutboundWebhookService extends BaseService
             'delivery_id' => $delivery->id,
             'event_type' => $eventType,
             'url' => $webhook->url,
+            'correlation_id' => $correlationId,
         ]);
 
         return $delivery;

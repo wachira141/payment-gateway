@@ -17,6 +17,8 @@ class PaymentWebhook extends BaseModel
         'processing_error',
         'retry_count',
         'processed_at',
+         'correlation_id',
+        'replay_of_webhook_id'
     ];
 
     protected $casts = [

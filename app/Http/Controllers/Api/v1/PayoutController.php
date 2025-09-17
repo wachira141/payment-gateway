@@ -68,7 +68,7 @@ class PayoutController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to create payout',
+                'message' => 'Failed to create payout. '. $e->getMessage(),
                 'error' => $e->getMessage()
             ], 400);
         }

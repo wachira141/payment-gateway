@@ -16,6 +16,7 @@ class PaymentIntent extends BaseModel
         'merchant_app_id',
         'amount',
         'customer_id',
+        'country_code',
         'currency',
         'status',
         'payment_method_types',
@@ -73,7 +74,7 @@ class PaymentIntent extends BaseModel
             if (empty($paymentIntent->intent_id)) {
                 $paymentIntent->intent_id = 'pi_' . Str::random(24);
             }
-           
+
             if (empty($paymentIntent->client_secret)) {
                 $paymentIntent->client_secret = $paymentIntent->intent_id . '_secret_' . Str::random(16);
             }
@@ -94,6 +95,14 @@ class PaymentIntent extends BaseModel
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    /**
+     * Country relationship
+     */
+    public function country()
+    {
+        return $this->belongsTo(Country::class, 'country_code', 'code');
     }
 
     /**
@@ -125,7 +134,7 @@ class PaymentIntent extends BaseModel
         if (!$this->gateway_transaction_id) {
             return null;
         }
-        
+
         return PaymentTransaction::where('transaction_id', $this->gateway_transaction_id)->first();
     }
 

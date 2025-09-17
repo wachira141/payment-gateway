@@ -8,7 +8,8 @@ class PaymentTransaction extends BaseModel
 {
     protected $fillable = [
         'transaction_id',
-        'user_id',
+        'merchant_id',
+        'customer_id',
         'payment_gateway_id',
         'gateway_transaction_id',
         'gateway_payment_intent_id',
@@ -26,6 +27,12 @@ class PaymentTransaction extends BaseModel
         'next_retry_at',
         'completed_at',
         'failed_at',
+        'gateway_code',
+        'payment_method_type',
+        'commission_amount',
+        'provider_amount',
+        'commission_processed',
+        'commission_breakdown',
     ];
 
     protected $casts = [
@@ -36,6 +43,10 @@ class PaymentTransaction extends BaseModel
         'next_retry_at' => 'datetime',
         'completed_at' => 'datetime',
         'failed_at' => 'datetime',
+        'commission_amount' => 'decimal:2',
+        'provider_amount' => 'decimal:2',
+        'commission_processed' => 'boolean',
+        'commission_breakdown' => 'array',
     ];
 
     /**
@@ -49,9 +60,17 @@ class PaymentTransaction extends BaseModel
     /**
      * Get the associated user
      */
-    public function user()
+    public function merchant()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Merchant::class);
+    }
+
+    /**
+     * Get the associated customer
+     */
+    public function customer()
+    {
+        return $this->belongsTo(Customer::class);
     }
 
     /**
@@ -84,11 +103,11 @@ class PaymentTransaction extends BaseModel
     public function scopeRetryable($query)
     {
         return $query->where('status', 'failed')
-                    ->where('retry_count', '<', 5)
-                    ->where(function ($q) {
-                        $q->whereNull('next_retry_at')
-                          ->orWhere('next_retry_at', '<=', now());
-                    });
+            ->where('retry_count', '<', 5)
+            ->where(function ($q) {
+                $q->whereNull('next_retry_at')
+                    ->orWhere('next_retry_at', '<=', now());
+            });
     }
 
     /**
@@ -112,9 +131,9 @@ class PaymentTransaction extends BaseModel
      */
     public function canRetry()
     {
-        return $this->isFailed() && 
-               $this->retry_count < 5 && 
-               (!$this->next_retry_at || $this->next_retry_at <= now());
+        return $this->isFailed() &&
+            $this->retry_count < 5 &&
+            (!$this->next_retry_at || $this->next_retry_at <= now());
     }
 
     /**
@@ -124,7 +143,8 @@ class PaymentTransaction extends BaseModel
     {
         return static::create([
             'transaction_id' => $data['transaction_id'],
-            'user_id' => $data['user_id'],
+            'merchant_id' => $data['merchant_id'],
+            'customer_id' => $data['customer_id'] ?? null,
             'payment_gateway_id' => $data['payment_gateway_id'],
             'payable_type' => $data['payable_type'],
             'payable_id' => $data['payable_id'],
@@ -148,7 +168,7 @@ class PaymentTransaction extends BaseModel
 
         if ($status) {
             $updateData['status'] = $status;
-            
+
             if ($status === 'completed') {
                 $updateData['completed_at'] = now();
             } elseif ($status === 'failed') {
@@ -214,8 +234,8 @@ class PaymentTransaction extends BaseModel
     public static function getByTransactionIdAndUser($transactionId, $userId)
     {
         return static::where('transaction_id', $transactionId)
-                    ->where('user_id', $userId)
-                    ->first();
+            ->where('user_id', $userId)
+            ->first();
     }
 
     /**
@@ -224,8 +244,8 @@ class PaymentTransaction extends BaseModel
     public static function getUserPaymentHistory($userId, array $filters = [], $perPage = 15)
     {
         $query = static::where('user_id', $userId)
-                      ->with(['paymentGateway', 'payable'])
-                      ->orderBy('created_at', 'desc');
+            ->with(['paymentGateway', 'payable'])
+            ->orderBy('created_at', 'desc');
 
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -304,8 +324,8 @@ class PaymentTransaction extends BaseModel
             SUM(commission_amount) as total_commission,
             AVG(amount) as avg_amount
         ')
-        ->groupBy('type')
-        ->get();
+            ->groupBy('type')
+            ->get();
     }
 
     /**
@@ -314,7 +334,7 @@ class PaymentTransaction extends BaseModel
     public static function getAdminTransactions(array $filters = [], $perPage = 15)
     {
         $query = static::with(['user', 'paymentGateway', 'payable'])
-                      ->orderBy('created_at', 'desc');
+            ->orderBy('created_at', 'desc');
 
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -345,10 +365,10 @@ class PaymentTransaction extends BaseModel
         }
 
         if (isset($filters['search'])) {
-            $query->where(function($q) use ($filters) {
+            $query->where(function ($q) use ($filters) {
                 $q->where('transaction_id', 'LIKE', '%' . $filters['search'] . '%')
-                  ->orWhere('gateway_transaction_id', 'LIKE', '%' . $filters['search'] . '%')
-                  ->orWhere('description', 'LIKE', '%' . $filters['search'] . '%');
+                    ->orWhere('gateway_transaction_id', 'LIKE', '%' . $filters['search'] . '%')
+                    ->orWhere('description', 'LIKE', '%' . $filters['search'] . '%');
             });
         }
 
@@ -361,14 +381,14 @@ class PaymentTransaction extends BaseModel
     public static function getFailedTransactionsForRetry($limit = 100)
     {
         return static::where('status', 'failed')
-                    ->where('retry_count', '<', 5)
-                    ->where(function ($q) {
-                        $q->whereNull('next_retry_at')
-                          ->orWhere('next_retry_at', '<=', now());
-                    })
-                    ->orderBy('created_at', 'asc')
-                    ->limit($limit)
-                    ->get();
+            ->where('retry_count', '<', 5)
+            ->where(function ($q) {
+                $q->whereNull('next_retry_at')
+                    ->orWhere('next_retry_at', '<=', now());
+            })
+            ->orderBy('created_at', 'asc')
+            ->limit($limit)
+            ->get();
     }
 
     /**
@@ -377,7 +397,7 @@ class PaymentTransaction extends BaseModel
     public static function getTopPaymentMethodsByRevenue($dateFrom = null, $dateTo = null, $limit = 10)
     {
         $query = static::join('payment_gateways', 'payment_transactions.payment_gateway_id', '=', 'payment_gateways.id')
-                      ->where('payment_transactions.status', 'completed');
+            ->where('payment_transactions.status', 'completed');
 
         if ($dateFrom) {
             $query->where('payment_transactions.created_at', '>=', $dateFrom);
@@ -392,9 +412,59 @@ class PaymentTransaction extends BaseModel
             COUNT(*) as transaction_count,
             SUM(payment_transactions.amount) as total_revenue
         ')
-        ->groupBy('payment_gateways.id', 'payment_gateways.name', 'payment_gateways.type')
-        ->orderBy('total_revenue', 'desc')
-        ->limit($limit)
+            ->groupBy('payment_gateways.id', 'payment_gateways.name', 'payment_gateways.type')
+            ->orderBy('total_revenue', 'desc')
+            ->limit($limit)
+            ->get();
+    }
+
+
+
+     /**
+     * Get unprocessed commission transactions
+     */
+    public static function getUnprocessedCommissions($limit = 100)
+    {
+        return static::where('commission_processed', false)
+            ->where('status', 'completed')
+            ->whereNotNull('gateway_code')
+            ->whereNotNull('payment_method_type')
+            ->orderBy('created_at', 'asc')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Get commission statistics for merchant
+     */
+    public static function getCommissionStatistics($merchantId = null, $dateFrom = null, $dateTo = null)
+    {
+        $query = static::where('commission_processed', true)
+            ->where('status', 'completed');
+
+        if ($merchantId) {
+            $query->where('merchant_id', $merchantId);
+        }
+
+        if ($dateFrom) {
+            $query->where('created_at', '>=', $dateFrom);
+        }
+
+        if ($dateTo) {
+            $query->where('created_at', '<=', $dateTo);
+        }
+
+        return $query->selectRaw('
+            COUNT(*) as total_transactions,
+            SUM(amount) as total_amount,
+            SUM(commission_amount) as total_commission,
+            SUM(provider_amount) as total_provider_amount,
+            AVG(commission_amount) as avg_commission,
+            gateway_code,
+            payment_method_type
+        ')
+        ->groupBy(['gateway_code', 'payment_method_type'])
         ->get();
     }
+
 }

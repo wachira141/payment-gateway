@@ -5,21 +5,46 @@ namespace App\Services;
 use App\Models\Charge;
 use App\Models\LedgerEntry;
 use App\Models\Refund;
+use App\Models\MerchantBalance;
+
 use Illuminate\Support\Facades\DB;
 
 class LedgerService
 {
+    private GatewayPricingService $gatewayPricingService;
+
+    public function __construct(GatewayPricingService $gatewayPricingService)
+    {
+        $this->gatewayPricingService = $gatewayPricingService;
+    }
     /**
-     * Record successful payment in ledger
+     * Record successful payment in ledger using gateway-based pricing
      */
-    public function recordPayment(Charge $charge)
+    public function recordPayment(Charge $charge, array $feeCalculation)
     {
         $merchant = $charge->merchant;
         $grossAmount = $charge->amount;
-        $feeAmount = $charge->fee_amount;
-        $netAmount = $grossAmount - $feeAmount;
 
-        DB::transaction(function () use ($merchant, $charge, $grossAmount, $feeAmount, $netAmount) {
+        // Get gateway-specific fee breakdown
+        $gatewayCode = $charge->gateway_code ?? 'unknown';
+        $paymentMethodType = $charge->payment_method_type ?? 'unknown';
+
+        $processingFee = $feeCalculation['processing_fee'];
+        $applicationFee = $feeCalculation['application_fee'];
+        $totalFees = $feeCalculation['total_fees'];
+        $netAmount = $grossAmount - $totalFees;
+
+        DB::transaction(function () use ($merchant, $charge, $grossAmount, $processingFee, $applicationFee, $totalFees, $netAmount, $gatewayCode, $paymentMethodType) {
+            $metadata = [
+                'gateway_code' => $gatewayCode,
+                'payment_method_type' => $paymentMethodType,
+                'fee_breakdown' => [
+                    'processing_fee' => $processingFee,
+                    'application_fee' => $applicationFee,
+                    'total_fees' => $totalFees
+                ]
+            ];
+            // Create ledger entries
             LedgerEntry::createTransaction(
                 $merchant->id,
                 $charge,
@@ -31,14 +56,25 @@ class LedgerService
                         'amount' => $netAmount,
                         'currency' => $charge->currency,
                         'description' => "Payment received - {$charge->charge_id}",
+                        'metadata' => $metadata,
                     ],
                     [
                         'account_type' => 'assets',
-                        'account_name' => 'platform_fees_receivable',
+                        'account_name' => 'gateway_processing_fees',
                         'entry_type' => 'debit',
-                        'amount' => $feeAmount,
+                        'amount' => $processingFee,
                         'currency' => $charge->currency,
-                        'description' => "Platform fee - {$charge->charge_id}",
+                        'description' => "Gateway processing fee - {$charge->charge_id} ({$gatewayCode})",
+                        'metadata' => $metadata,
+                    ],
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'platform_application_fees',
+                        'entry_type' => 'debit',
+                        'amount' => $applicationFee,
+                        'currency' => $charge->currency,
+                        'description' => "Platform application fee - {$charge->charge_id}",
+                        'metadata' => $metadata,
                     ],
                     [
                         'account_type' => 'revenue',
@@ -46,26 +82,61 @@ class LedgerService
                         'entry_type' => 'credit',
                         'amount' => $grossAmount,
                         'currency' => $charge->currency,
-                        'description' => "Payment processed - {$charge->charge_id}",
+                        'description' => "Payment processed - {$charge->charge_id} ({$gatewayCode}/{$paymentMethodType})",
+                        'metadata' => $metadata,
                     ],
                 ]
             );
+
+            // Update merchant balance - add net amount to pending
+            $balance = MerchantBalance::findByMerchantAndCurrency($merchant->id, $charge->currency);
+            //if not exists, create it
+            if (!$balance) {
+                $balance = MerchantBalance::createIfNotExists($merchant->id, $charge->currency);
+            }
+
+            $balance->creditPending($netAmount);
         });
+
+        // Update charge with calculated fees for future reference
+        $charge->update([
+            'fee_amount' => $totalFees,
+            'gateway_processing_fee' => $processingFee,
+            'platform_application_fee' => $applicationFee,
+        ]);
     }
 
     /**
-     * Record refund in ledger
+     * Record refund in ledger with gateway-aware fee calculations
      */
     public function recordRefund(Refund $refund)
     {
         $charge = $refund->charge;
         $merchant = $charge->merchant;
         $refundAmount = $refund->amount;
-        
-        // Calculate fee refund (if applicable)
-        $feeRefund = ($refund->amount / $charge->amount) * $charge->fee_amount;
 
-        DB::transaction(function () use ($merchant, $refund, $charge, $refundAmount, $feeRefund) {
+        // Calculate proportional fee refund based on original gateway fees
+        $refundRatio = $refund->amount / $charge->amount;
+        $processingFeeRefund = ($charge->gateway_processing_fee ?? 0) * $refundRatio;
+        $applicationFeeRefund = ($charge->platform_application_fee ?? 0) * $refundRatio;
+        $totalFeeRefund = $processingFeeRefund + $applicationFeeRefund;
+
+        $gatewayCode = $charge->gateway_code ?? 'unknown';
+        $paymentMethodType = $charge->payment_method_type ?? 'unknown';
+
+        DB::transaction(function () use ($merchant, $refund, $charge, $refundAmount, $processingFeeRefund, $applicationFeeRefund, $totalFeeRefund, $gatewayCode, $paymentMethodType) {
+            $metadata = [
+                'gateway_code' => $gatewayCode,
+                'payment_method_type' => $paymentMethodType,
+                'original_charge_id' => $charge->id,
+                'refund_ratio' => $refund->amount / $charge->amount,
+                'fee_refund_breakdown' => [
+                    'processing_fee_refund' => $processingFeeRefund,
+                    'application_fee_refund' => $applicationFeeRefund,
+                    'total_fee_refund' => $totalFeeRefund
+                ]
+            ];
+
             LedgerEntry::createTransaction(
                 $merchant->id,
                 $refund,
@@ -76,101 +147,88 @@ class LedgerService
                         'entry_type' => 'debit',
                         'amount' => $refundAmount,
                         'currency' => $refund->currency,
-                        'description' => "Refund processed - {$refund->refund_id}",
+                        'description' => "Refund processed - {$refund->refund_id} ({$gatewayCode})",
+                        'metadata' => $metadata,
                     ],
                     [
                         'account_type' => 'assets',
                         'account_name' => 'merchant_balance_available',
                         'entry_type' => 'credit',
-                        'amount' => $refundAmount - $feeRefund,
+                        'amount' => $refundAmount - $totalFeeRefund,
                         'currency' => $refund->currency,
                         'description' => "Refund deducted from balance - {$refund->refund_id}",
+                        'metadata' => $metadata,
                     ],
                     [
                         'account_type' => 'assets',
-                        'account_name' => 'platform_fees_receivable',
+                        'account_name' => 'gateway_processing_fees',
                         'entry_type' => 'credit',
-                        'amount' => $feeRefund,
+                        'amount' => $processingFeeRefund,
                         'currency' => $refund->currency,
-                        'description' => "Fee refund - {$refund->refund_id}",
+                        'description' => "Processing fee refund - {$refund->refund_id}",
+                        'metadata' => $metadata,
+                    ],
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'platform_application_fees',
+                        'entry_type' => 'credit',
+                        'amount' => $applicationFeeRefund,
+                        'currency' => $refund->currency,
+                        'description' => "Application fee refund - {$refund->refund_id}",
+                        'metadata' => $metadata,
                     ],
                 ]
             );
+
+            // Update merchant balance - deduct refund from available balance
+            $balance = MerchantBalance::findByMerchantAndCurrency($merchant->id, $refund->currency);
+            if ($balance) {
+                $balance->debitAvailable($refundAmount - $totalFeeRefund);
+            }
         });
     }
 
     /**
-     * Record balance settlement (move from pending to available)
+     * Record balance settlement (moving from pending to available)
      */
-    public function recordBalanceSettlement($merchantId, $currency, $amount)
+    public function recordBalanceSettlement(MerchantBalance $balance, float $amount)
     {
-        DB::transaction(function () use ($merchantId, $currency, $amount) {
+        DB::transaction(function () use ($balance, $amount) {
+            $metadata = [
+                'settlement_type' => 'pending_to_available',
+                'merchant_id' => $balance->merchant_id,
+                'currency' => $balance->currency,
+                'amount_settled' => $amount
+            ];
+
+            // Create ledger entries for the settlement
             LedgerEntry::createTransaction(
-                $merchantId,
-                null, // No related model for settlement
+                $balance->merchant_id,
+                $balance, // Use balance as reference
                 [
                     [
                         'account_type' => 'assets',
                         'account_name' => 'merchant_balance_pending',
                         'entry_type' => 'credit',
                         'amount' => $amount,
-                        'currency' => $currency,
-                        'description' => 'Balance settlement - pending to available',
+                        'currency' => $balance->currency,
+                        'description' => "Balance settlement - moved to available",
+                        'metadata' => $metadata,
                     ],
                     [
                         'account_type' => 'assets',
                         'account_name' => 'merchant_balance_available',
                         'entry_type' => 'debit',
                         'amount' => $amount,
-                        'currency' => $currency,
-                        'description' => 'Balance settlement - pending to available',
+                        'currency' => $balance->currency,
+                        'description' => "Balance settlement - from pending",
+                        'metadata' => $metadata,
                     ],
                 ]
             );
-        });
-    }
 
-    /**
-     * Record payout in ledger
-     */
-    public function recordPayout($payout)
-    {
-        $merchant = $payout->merchant;
-        $payoutAmount = $payout->gross_amount;
-        $feeAmount = $payout->fee_amount;
-        $netAmount = $payout->net_amount;
-
-        DB::transaction(function () use ($merchant, $payout, $payoutAmount, $feeAmount, $netAmount) {
-            LedgerEntry::createTransaction(
-                $merchant->id,
-                $payout,
-                [
-                    [
-                        'account_type' => 'assets',
-                        'account_name' => 'merchant_balance_available',
-                        'entry_type' => 'credit',
-                        'amount' => $payoutAmount,
-                        'currency' => $payout->currency,
-                        'description' => "Payout processed - {$payout->payout_id}",
-                    ],
-                    [
-                        'account_type' => 'fees',
-                        'account_name' => 'payout_processing_fees',
-                        'entry_type' => 'debit',
-                        'amount' => $feeAmount,
-                        'currency' => $payout->currency,
-                        'description' => "Payout fee - {$payout->payout_id}",
-                    ],
-                    [
-                        'account_type' => 'assets',
-                        'account_name' => 'cash_disbursed',
-                        'entry_type' => 'debit',
-                        'amount' => $netAmount,
-                        'currency' => $payout->currency,
-                        'description' => "Cash disbursed - {$payout->payout_id}",
-                    ],
-                ]
-            );
+            // Update the merchant balance
+            $balance->movePendingToAvailable($amount);
         });
     }
 
@@ -239,7 +297,7 @@ class LedgerService
         if (in_array($accountType, ['assets', 'fees'])) {
             return $debits - $credits;
         }
-        
+
         // Liabilities, equity, and revenue: credits increase balance
         return $credits - $debits;
     }

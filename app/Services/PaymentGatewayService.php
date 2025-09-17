@@ -107,6 +107,38 @@ class PaymentGatewayService
         return 'US';
     }
 
+       /**
+     * Get available gateways filtered by payment method types
+     */
+    public function getAvailableGatewaysForPaymentMethods(
+        string $countryCode, 
+        string $currency = 'USD', 
+        array $paymentMethodTypes = []
+    ) {
+        if (empty($paymentMethodTypes)) {
+            return $this->getAvailableGateways($countryCode, $currency);
+        }
+
+        $gatewayMapper = new \App\Services\PaymentMethodGatewayMapper();
+        $filteredGateways = collect();
+
+        foreach ($paymentMethodTypes as $paymentMethodType) {
+            $gateway = $gatewayMapper->getGatewayForPaymentMethod(
+                $paymentMethodType, 
+                $currency, 
+                $countryCode
+            );
+            
+            if ($gateway && !$filteredGateways->contains('id', $gateway->id)) {
+                $filteredGateways->push($gateway);
+            }
+        }
+
+        // Sort by priority
+        return $filteredGateways->sortByDesc('priority')->values();
+    }
+
+
     /**
      * Calculate disbursement fee for Kenya
      */

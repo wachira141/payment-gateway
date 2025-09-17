@@ -131,4 +131,31 @@ class MerchantBalance extends BaseModel
             ->where('currency', $currency)
             ->first();
     }
+
+    /**
+     * Get all balances for a merchant
+     */
+    public static function getByMerchant($merchantId)
+    {
+        return self::where('merchant_id', $merchantId)->get();
+    }
+
+    /**
+     * Create if not exists
+     */
+    public static function createIfNotExists($merchantId, $currency)
+    {
+        return self::firstOrCreate(
+            [
+                'merchant_id' => $merchantId,
+                'currency' => $currency,
+            ],
+            [
+                'available_amount' => 0,
+                'pending_amount' => 0,
+                'reserved_amount' => 0,
+                'total_volume' => 0,
+            ]
+        );
+    }
 }

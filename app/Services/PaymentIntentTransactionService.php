@@ -8,17 +8,44 @@ use App\Events\PaymentIntentSucceeded;
 use App\Events\PaymentIntentFailed;
 use Illuminate\Support\Facades\Log;
 
+use App\Services\CustomerResolutionService;
+
 /**
  * Service to manage the relationship and synchronization between
  * PaymentIntent and PaymentTransaction models
  */
 class PaymentIntentTransactionService
 {
+
+    protected CustomerResolutionService $customerResolver;
+
+    public function __construct(CustomerResolutionService $customerResolver)
+    {
+        $this->customerResolver = $customerResolver;
+    }
+
     /**
+     * Link a payment transaction to a payment intent
+     */
+     /**
      * Link a payment transaction to a payment intent
      */
     public function linkTransactionToIntent(PaymentIntent $paymentIntent, PaymentTransaction $transaction): void
     {
+        // Resolve customer if transaction doesn't have one
+        if (!$transaction->customer_id && $paymentIntent->customer_id) {
+            $transaction->update(['customer_id' => $paymentIntent->customer_id]);
+        } elseif (!$transaction->customer_id) {
+            $customer = $this->customerResolver->resolveFromPaymentIntent($paymentIntent);
+            if ($customer) {
+                $transaction->update(['customer_id' => $customer->id]);
+                // Also update payment intent if it doesn't have customer
+                if (!$paymentIntent->customer_id) {
+                    $paymentIntent->update(['customer_id' => $customer->id]);
+                }
+            }
+        }
+
         $paymentIntent->update([
             'gateway_transaction_id' => $transaction->transaction_id,
             'gateway_payment_intent_id' => $transaction->gateway_payment_intent_id,

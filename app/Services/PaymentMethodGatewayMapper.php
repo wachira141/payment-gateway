@@ -109,7 +109,7 @@ class PaymentMethodGatewayMapper
         $mapping = [
             'card' => 'stripe',
             'mobile_money' => $this->getMobileMoneyGatewayType($countryCode),
-            'bank_transfer' => $this->getBankTransferGatewayType($countryCode),
+            'bank' => $this->getBankTransferGatewayType($countryCode),
             'ussd' => 'ussd',
         ];
 
@@ -171,13 +171,13 @@ class PaymentMethodGatewayMapper
         return PaymentGateway::isPaymentMethodSupported($countryCode, $gatewayType, $currency);
     }
 
-    /**
+     /**
      * Get supported payment methods for country and currency
      */
     public function getSupportedPaymentMethods(string $countryCode, string $currency = 'USD'): array
     {
         $supportedMethods = [];
-        $paymentMethods = ['card', 'mobile_money', 'bank_transfer', 'ussd'];
+        $paymentMethods = ['card', 'mobile_money', 'bank'];
 
         foreach ($paymentMethods as $method) {
             if ($this->isPaymentMethodSupported($method, $countryCode, $currency)) {
