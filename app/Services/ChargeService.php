@@ -71,13 +71,13 @@ class ChargeService extends BaseService
      */
     public function createChargeFromPaymentIntent(string $paymentIntentId, array $data): Charge
     {
-        $paymentIntent = PaymentIntent::findById($paymentIntentId);
+        $paymentIntent = PaymentIntent::findByPaymentIntentId($paymentIntentId);
         
         if (!$paymentIntent) {
             throw new \Exception('Payment intent not found');
         }
 
-        if ($paymentIntent['status'] !== 'requires_capture') {
+        if ($paymentIntent['status'] !== 'succeeded') {
             throw new \Exception('Payment intent is not in capturable state');
         }
 

@@ -256,4 +256,92 @@ class GatewayPricingService extends BaseService
             'coverage_percentage' => round($coveragePercentage, 2)
         ];
     }
+
+
+    /**
+     * Calculate payout fees based on beneficiary and amount
+     */
+    public function calculatePayoutFees(
+        string $merchantId,
+        array $beneficiary,
+        int $amount,
+        string $currency
+    ): array {
+        $payoutMethod = $this->mapBeneficiaryToPayoutMethod($beneficiary);
+        
+        $pricing = $this->getPricingConfig(
+            $merchantId,
+            'payout',
+            $payoutMethod,
+            $currency
+        );
+
+        if (!$pricing) {
+            Log::warning('No payout pricing configuration found, using fallback rates', [
+                'merchant_id' => $merchantId,
+                'payout_method' => $payoutMethod,
+                'currency' => $currency,
+            ]);
+            
+            return $this->getFallbackPayoutPricing($amount, $currency, $payoutMethod);
+        }
+
+        return $this->calculateFees($amount, $pricing);
+    }
+
+    /**
+     * Map beneficiary type to payout method
+     */
+    private function mapBeneficiaryToPayoutMethod(array $beneficiary): string
+    {
+        return match ($beneficiary['type']) {
+            'bank_account' => 'bank_transfer',
+            'mobile_wallet', 'mobile_money' => 'mobile_money',
+            'international_wire' => 'international_wire',
+            default => 'bank_transfer'
+        };
+    }
+
+    /**
+     * Get fallback payout pricing when no configuration is found
+     */
+    private function getFallbackPayoutPricing(int $amount, string $currency, string $payoutMethod): array
+    {
+        $fallbackRates = [
+            'bank_transfer' => [
+                'KES' => ['processing_fee_rate' => 0.005, 'processing_fee_fixed' => 5000, 'min_fee' => 10000],
+                'USD' => ['processing_fee_rate' => 0.008, 'processing_fee_fixed' => 50, 'min_fee' => 100],
+                'ETB' => ['processing_fee_rate' => 0.006, 'processing_fee_fixed' => 2000, 'min_fee' => 5000],
+                'default' => ['processing_fee_rate' => 0.01, 'processing_fee_fixed' => 100, 'min_fee' => 100],
+            ],
+            'mobile_money' => [
+                'KES' => ['processing_fee_rate' => 0.003, 'processing_fee_fixed' => 2000, 'min_fee' => 5000],
+                'ETB' => ['processing_fee_rate' => 0.004, 'processing_fee_fixed' => 1000, 'min_fee' => 3000],
+                'default' => ['processing_fee_rate' => 0.005, 'processing_fee_fixed' => 100, 'min_fee' => 100],
+            ],
+        ];
+
+        $methodRates = $fallbackRates[$payoutMethod] ?? $fallbackRates['bank_transfer'];
+        $rates = $methodRates[$currency] ?? $methodRates['default'];
+        
+        $processingFee = ($amount * $rates['processing_fee_rate']) + $rates['processing_fee_fixed'];
+        $applicationFee = $amount * 0.002; // 0.2% platform fee
+        
+        if (isset($rates['min_fee'])) {
+            $processingFee = max($processingFee, $rates['min_fee']);
+        }
+
+        $totalFees = $processingFee + $applicationFee;
+
+        return [
+            'processing_fee' => round($processingFee),
+            'application_fee' => round($applicationFee),
+            'total_fees' => round($totalFees),
+            'commission_amount' => round($applicationFee),
+            'provider_amount' => $amount - round($totalFees),
+            'gateway_code' => 'payout',
+            'payment_method_type' => $payoutMethod,
+            'breakdown' => array_merge($rates, ['fallback' => true])
+        ];
+    }
 }

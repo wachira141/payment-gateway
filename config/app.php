@@ -27,7 +27,7 @@ return [
     | Webhook Events
     |--------------------------------------------------------------------------
     |
-    | Define the available webhook events
+    | Define the available webhook events for merchants
     |
     */
     'webhook_events' => [
@@ -43,17 +43,77 @@ return [
         'payout.succeeded' => 'Payout succeeded',
         'payout.failed' => 'Payout failed',
         'account.updated' => 'Account updated',
-
-        // Balance Events
         'balance.updated' => 'Balance updated',
-        // Charge Events
         'charge.created' => 'Charge created',
         'charge.succeeded' => 'Charge succeeded',
         'charge.failed' => 'Charge failed',
+        'settlement.created' => 'Settlement created',
+        'settlement.completed' => 'Settlement completed',
+    ],
 
-         // Settlement Events
-         'settlement.created' => 'Settlement created',
-         'settlement.completed' => 'Settlement completed',
+    /*
+    |--------------------------------------------------------------------------
+    | Webhook Event Mappings
+    |--------------------------------------------------------------------------
+    |
+    | Maps gateway-specific events to merchant-facing events
+    |
+    */
+    'webhook_event_mappings' => [
+        // Payment Intent Events
+        'payment_intent.succeeded' => 'payment_intent.succeeded',
+        'payment_intent.payment_succeeded' => 'payment_intent.succeeded',
+        'payment_intent.failed' => 'payment_intent.payment_failed',
+        'payment_intent.payment_failed' => 'payment_intent.payment_failed',
+        'payment_intent.cancelled' => 'payment_intent.canceled',
+        'payment_intent.confirmed' => 'payment_intent.requires_action',
+        'payment_intent.captured' => 'payment_intent.succeeded',
+        'payment_intent.created' => 'payment_intent.created',
+
+        // Gateway-specific payment events
+        'payment.completed' => 'payment_intent.succeeded',
+        'payment.failed' => 'payment_intent.payment_failed',
+        'payment.pending' => 'payment_intent.requires_action',
+        'payment.cancelled' => 'payment_intent.canceled',
+
+        // Disbursement Events
+        'disbursement.completed' => 'payout.succeeded',
+        'disbursement.failed' => 'payout.failed',
+
+        // Refund Events
+        'refund.completed' => 'refund.succeeded',
+        'refund.failed' => 'refund.failed',
+
+        // Charge Events
+        'charge.succeeded' => 'charge.succeeded',
+        'charge.failed' => 'charge.failed',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Gateway Event Type Mappings
+    |--------------------------------------------------------------------------
+    |
+    | Maps gateway-specific event determination to standard event types
+    |
+    */
+    'gateway_event_mappings' => [
+        'mpesa' => [
+            'b2c_success' => 'disbursement.completed',
+            'b2c_failure' => 'disbursement.failed',
+            'stk_success' => 'payment.completed',
+            'stk_failure' => 'payment.failed',
+        ],
+        'stripe' => [
+            'payment_intent.succeeded' => 'payment_intent.succeeded',
+            'payment_intent.payment_failed' => 'payment_intent.failed',
+            'charge.succeeded' => 'charge.succeeded',
+            'charge.failed' => 'charge.failed',
+        ],
+        'telebirr' => [
+            'payment.success' => 'payment.completed',
+            'payment.failed' => 'payment.failed',
+        ],
     ],
 
       /*

@@ -22,54 +22,28 @@ class WebhookEventService extends BaseService
     }
     
     /**
-     * Webhook event type mapping from gateway events to platform events
+     * Get webhook event type mapping from config
      */
     public static function getEventTypeMapping(): array
     {
-        return [
-            // Payment Intent Events
-            'payment_intent.succeeded' => 'payment.completed',
-            'payment_intent.payment_succeeded' => 'payment.completed',
-            'payment_intent.failed' => 'payment.failed',
-            'payment_intent.payment_failed' => 'payment.failed',
-            'payment_intent.cancelled' => 'payment.cancelled',
-            'payment_intent.confirmed' => 'payment.confirmed',
-            'payment_intent.captured' => 'payment.captured',
-            'payment_intent.created' => 'payment.created',
-            
-            // Legacy mappings
-            'payment.completed' => 'payment.completed',
-            'payment.failed' => 'payment.failed',
-            'payment.pending' => 'payment.pending',
-            'payment.cancelled' => 'payment.cancelled',
-            
-            // Disbursement Events
-            'disbursement.completed' => 'payout.completed',
-            'disbursement.failed' => 'payout.failed',
-            
-            // Refund Events
-            'refund.completed' => 'refund.completed',
-            'refund.failed' => 'refund.failed',
-        ];
+        return config('apps.webhook_event_mappings', []);
     }
-    
+
     /**
-     * Get available merchant-facing event types
+     * Get available merchant-facing event types from config
      */
     public static function getMerchantEventTypes(): array
     {
-        return [
-            'payment.created' => 'Payment Created',
-            'payment.confirmed' => 'Payment Confirmed', 
-            'payment.completed' => 'Payment Completed',
-            'payment.failed' => 'Payment Failed',
-            'payment.cancelled' => 'Payment Cancelled',
-            'payment.captured' => 'Payment Captured',
-            'payout.completed' => 'Payout Completed',
-            'payout.failed' => 'Payout Failed',
-            'refund.completed' => 'Refund Completed',
-            'refund.failed' => 'Refund Failed',
-        ];
+        return config('apps.webhook_events', []);
+    }
+
+    /**
+     * Get gateway-specific event mappings
+     */
+    public static function getGatewayEventMappings(string | null $gateway = null): array
+    {
+        $mappings = config('app.gateway_event_mappings', []);
+        return $gateway ? ($mappings[$gateway] ?? []) : $mappings;
     }
     
     /**
@@ -87,20 +61,74 @@ class WebhookEventService extends BaseService
     {
         // Generate correlation ID for tracking
         $correlationId = $this->generateCorrelationId();
-        
+
         // Update incoming webhook with correlation ID
         $incomingWebhook->update(['correlation_id' => $correlationId]);
-        
+
+        // Standardize the process result structure
+        $standardizedResult = $this->standardizeProcessResult($processResult);
+
         // Check if this should trigger outbound webhooks
-        if ($processResult['status'] === 'processed' && isset($processResult['payment_intent_id'])) {
-            $this->triggerOutboundWebhooks($incomingWebhook, $processResult, $correlationId);
+        if ($standardizedResult['status'] === 'processed' && isset($standardizedResult['payment_intent_id'])) {
+            $this->triggerOutboundWebhooks($incomingWebhook, $standardizedResult, $correlationId);
         }
-        
+
         Log::info('Webhook event processed with correlation tracking', [
             'correlation_id' => $correlationId,
             'incoming_webhook_id' => $incomingWebhook->webhook_id,
-            'process_result' => $processResult
+            'process_result' => $standardizedResult
         ]);
+    }
+
+    /**
+     * Standardize different process result formats
+     */
+    protected function standardizeProcessResult(array $processResult): array
+    {
+        // If already in standard format
+        if (isset($processResult['status'])) {
+            return $processResult;
+        }
+
+        // Handle legacy transaction-based format
+        if (isset($processResult['success']) && isset($processResult['transaction'])) {
+            $transaction = $processResult['transaction'];
+            $paymentIntent = null;
+
+            // Try to find associated payment intent
+            if ($transaction->payable_type === 'App\\Models\\PaymentIntent') {
+                $paymentIntent = PaymentIntent::find($transaction->payable_id);
+            } else if ($transaction->gateway_transaction_id) {
+                $paymentIntent = PaymentIntent::where('gateway_transaction_id', $transaction->gateway_transaction_id)->first();
+            }
+
+            return [
+                'status' => $processResult['success'] ? 'processed' : 'failed',
+                'payment_intent_id' => $paymentIntent ? $paymentIntent->intent_id : null,
+                'transaction_id' => $transaction->id,
+                'action' => $this->mapTransactionStatusToAction($transaction->status)
+            ];
+        }
+
+        // Default fallback
+        return [
+            'status' => 'ignored',
+            'reason' => 'unknown_format'
+        ];
+    }
+
+    /**
+     * Map transaction status to webhook action
+     */
+    protected function mapTransactionStatusToAction(string $status): string
+    {
+        return match ($status) {
+            'completed' => 'succeeded',
+            'failed' => 'failed',
+            'cancelled' => 'cancelled',
+            'pending' => 'pending',
+            default => 'unknown'
+        };
     }
     
     /**
@@ -152,31 +180,25 @@ class WebhookEventService extends BaseService
     protected function mapToMerchantEventType(string $gatewayEventType, string $action = ''): ?string
     {
         $mapping = self::getEventTypeMapping();
-        
+
         // Direct mapping
         if (isset($mapping[$gatewayEventType])) {
             return $mapping[$gatewayEventType];
         }
-        
+
         // Action-based mapping for generic events
-        if ($gatewayEventType === 'payment_intent') {
-            return match ($action) {
-                'succeeded' => 'payment.completed',
-                'failed' => 'payment.failed',
-                'cancelled' => 'payment.cancelled',
-                'confirmed' => 'payment.confirmed',
-                'captured' => 'payment.captured',
-                default => null
-            };
+        if ($gatewayEventType === 'payment_intent' && $action) {
+            $eventKey = "payment_intent.{$action}";
+            return $mapping[$eventKey] ?? null;
         }
-        
+
         return null;
     }
     
     /**
      * Get webhook delivery statistics with correlation tracking
      */
-    public function getWebhookFlowStats(string $timeframe = '24h'): array
+    public function getWebhookFlowStats(string $timeframe = '24h', ?string $appId = null): array
     {
         $startDate = match ($timeframe) {
             '1h' => now()->subHour(),
@@ -186,8 +208,13 @@ class WebhookEventService extends BaseService
             default => now()->subDay()
         };
         
-        $incomingStats = PaymentWebhook::where('created_at', '>=', $startDate)
-            ->selectRaw('
+        // Incoming webhooks query with app filtering
+        $incomingQuery = PaymentWebhook::where('created_at', '>=', $startDate);
+        if ($appId) {
+            $incomingQuery->where('merchant_app_id', $appId);
+        }
+        
+        $incomingStats = $incomingQuery->selectRaw('
                 COUNT(*) as total,
                 SUM(CASE WHEN status = "processed" THEN 1 ELSE 0 END) as processed,
                 SUM(CASE WHEN status = "failed" THEN 1 ELSE 0 END) as failed,
@@ -195,8 +222,15 @@ class WebhookEventService extends BaseService
             ')
             ->first();
             
-        $outboundStats = WebhookDelivery::where('created_at', '>=', $startDate)
-            ->selectRaw('
+        // Outbound webhooks query with app filtering
+        $outboundQuery = WebhookDelivery::where('created_at', '>=', $startDate);
+        if ($appId) {
+            $outboundQuery->whereHas('appWebhook', function ($q) use ($appId) {
+                $q->where('app_id', $appId);
+            });
+        }
+        
+        $outboundStats = $outboundQuery->selectRaw('
                 COUNT(*) as total,
                 SUM(CASE WHEN status = "delivered" THEN 1 ELSE 0 END) as delivered,
                 SUM(CASE WHEN status = "failed" THEN 1 ELSE 0 END) as failed,

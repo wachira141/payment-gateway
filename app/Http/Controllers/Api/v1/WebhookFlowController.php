@@ -21,9 +21,10 @@ class WebhookFlowController extends Controller
     public function getFlowStats(Request $request)
     {
         $timeframe = $request->get('timeframe', '24h');
+        $appId = $request->get('app_id');
         
         return response()->json(
-            $this->webhookEventService->getWebhookFlowStats($timeframe)
+            $this->webhookEventService->getWebhookFlowStats($timeframe, $appId)
         );
     }
 

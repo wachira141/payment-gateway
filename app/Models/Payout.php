@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use Illuminate\Support\Str;
+
 class Payout extends BaseModel
 {
     protected $table = 'payouts';
@@ -31,11 +33,34 @@ class Payout extends BaseModel
     ];
 
     /**
+     * Boot function from Laravel.
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($payout) {
+            if (empty($payout->payout_id)) {
+                $payout->payout_id = 'pa_' . Str::random(24);
+            }
+        });
+    }
+
+    /**
+     * Get the beneficiary that owns the payout
+     */
+    public function beneficiary()
+    {
+        return $this->belongsTo(Beneficiary::class, 'beneficiary_id', 'beneficiary_id');
+    }
+
+
+    /**
      * Find payout by ID
      */
     public static function findById(string $payoutId): ?array
     {
-        $payout = static::where('payout_id', $payoutId)->first();
+        $payout = static::where('id', $payoutId)->first();
         return $payout ? $payout->toArray() : null;
     }
 
@@ -55,7 +80,7 @@ class Payout extends BaseModel
      */
     public static function updateById(string $payoutId, array $data): ?array
     {
-        $updated = static::where('payout_id', $payoutId)->update($data);
+        $updated = static::where('id', $payoutId)->update($data);
         if ($updated) {
             return static::findById($payoutId);
         }
@@ -67,7 +92,8 @@ class Payout extends BaseModel
      */
     public static function getForMerchant(string $merchantId, array $filters = []): array
     {
-        $query = static::where('merchant_id', $merchantId);
+        $query = static::where('merchant_id', $merchantId)
+            ->with('beneficiary:beneficiary_id,name,type,currency');
 
         if (!empty($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -95,7 +121,14 @@ class Payout extends BaseModel
             $query->offset($filters['offset']);
         }
 
-        return $query->get()->toArray();
+        return $query->get()->map(function ($payout) {
+            $payoutArray = $payout->toArray();
+            if ($payout->beneficiary) {
+                $payoutArray['beneficiary_name'] = $payout->beneficiary->name;
+                $payoutArray['beneficiary_type'] = $payout->beneficiary->type;
+            }
+            return $payoutArray;
+        })->toArray();
     }
 
     /**
@@ -103,6 +136,7 @@ class Payout extends BaseModel
      */
     public static function getStatsForMerchant(string $merchantId, array $filters = []): array
     {
+       
         $query = static::where('merchant_id', $merchantId);
 
         if (!empty($filters['start_date'])) {
@@ -115,14 +149,38 @@ class Payout extends BaseModel
 
         $payouts = $query->get();
 
-        return [
+        // Overall summary (counts only, no currency mixing)
+        $summary = [
             'total_payouts' => $payouts->count(),
             'successful_payouts' => $payouts->whereIn('status', ['in_transit', 'completed'])->count(),
             'failed_payouts' => $payouts->where('status', 'failed')->count(),
             'pending_payouts' => $payouts->where('status', 'pending')->count(),
-            'total_payout_amount' => $payouts->whereIn('status', ['in_transit', 'completed'])->sum('amount'),
-            'total_fees' => $payouts->whereIn('status', ['in_transit', 'completed'])->sum('fee_amount'),
-            'average_payout_amount' => $payouts->whereIn('status', ['in_transit', 'completed'])->avg('amount') ?: 0,
+            'cancelled_payouts' => $payouts->where('status', 'cancelled')->count(),
+        ];
+
+        // Group by currency for currency-specific calculations
+        $currencyBreakdown = [];
+        $payoutsByCurrency = $payouts->groupBy('currency');
+
+        foreach ($payoutsByCurrency as $currency => $currencyPayouts) {
+            $successfulPayouts = $currencyPayouts->whereIn('status', ['in_transit', 'completed']);
+            
+            $currencyBreakdown[$currency] = [
+                'currency' => $currency,
+                'total_payouts' => $currencyPayouts->count(),
+                'successful_payouts' => $successfulPayouts->count(),
+                'failed_payouts' => $currencyPayouts->where('status', 'failed')->count(),
+                'pending_payouts' => $currencyPayouts->where('status', 'pending')->count(),
+                'cancelled_payouts' => $currencyPayouts->where('status', 'cancelled')->count(),
+                'total_payout_amount' => $successfulPayouts->sum('amount'),
+                'total_fees' => $successfulPayouts->sum('fee_amount'),
+                'average_payout_amount' => $successfulPayouts->avg('amount') ?: 0,
+            ];
+        }
+
+        return [
+            'summary' => $summary,
+            'currency_breakdown' => $currencyBreakdown,
         ];
     }
 }

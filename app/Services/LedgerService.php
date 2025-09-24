@@ -8,6 +8,8 @@ use App\Models\Refund;
 use App\Models\MerchantBalance;
 
 use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
+
 
 class LedgerService
 {
@@ -44,6 +46,20 @@ class LedgerService
                     'total_fees' => $totalFees
                 ]
             ];
+
+                  // Record the transaction in ledger
+        // app(LedgerService::class)->recordEntry([
+        //     'merchant_id' => $merchantId,
+        //     'account_name' => 'merchant_balance_reserved',
+        //     'currency' => $currency,
+        //     'debit_amount' => $amount,
+        //     'credit_amount' => 0,
+        //     'balance_after' => $balance->reserved_amount,
+        //     'transaction_type' => 'reserved_processed',
+        //     'description' => $reason,
+        //     'reference_id' => $referenceId,
+        //     'posted_at' => now()
+        // ]);
             // Create ledger entries
             LedgerEntry::createTransaction(
                 $merchant->id,
@@ -253,11 +269,14 @@ class LedgerService
         }
 
         $entries = $query->get();
+        // Convert to Carbon instances if they're strings
+        $startDateTime = is_string($startDate) ? Carbon::parse($startDate) : $startDate;
+        $endDateTime = is_string($endDate) ? Carbon::parse($endDate) : $endDate;
 
         $report = [
             'period' => [
-                'start' => $startDate,
-                'end' => $endDate,
+                'start' => $startDate->toDateString(), // e.g. "2025-08-18"
+                'end'   => $endDate->toDateString(),   // e.g. "2025-09-18"
             ],
             'currency' => $currency,
             'accounts' => [],
@@ -300,5 +319,155 @@ class LedgerService
 
         // Liabilities, equity, and revenue: credits increase balance
         return $credits - $debits;
+    }
+
+    /**
+     * Generate financial reports for all currencies
+     */
+    public function generateMultiCurrencyFinancialReport($merchantId, $startDate, $endDate)
+    {
+        // Get all currencies used by this merchant
+        $currencies = LedgerEntry::where('merchant_id', $merchantId)
+            ->whereBetween('posted_at', [$startDate, $endDate])
+            ->distinct('currency')
+            ->pluck('currency')
+            ->toArray();
+
+        $reports = [];
+        foreach ($currencies as $currency) {
+            $reports[] = $this->generateFinancialReport($merchantId, $startDate, $endDate, $currency);
+        }
+
+        return $reports;
+    }
+
+    /**
+     * Get account balances for a specific currency
+     */
+    public function getAccountBalancesByCurrency($merchantId, $currency)
+    {
+        $accountTypes = [
+            'merchant_balance_available' => 'assets',
+            'merchant_balance_pending' => 'assets',
+            'gateway_processing_fees' => 'assets',
+            'platform_application_fees' => 'assets',
+            'payment_processing_revenue' => 'revenue'
+        ];
+
+        $balances = [];
+        foreach ($accountTypes as $accountName => $accountType) {
+            $balance = $this->getAccountBalance($merchantId, $accountType, $accountName, $currency);
+            $balances[] = [
+                'account_type' => $accountName,
+                'currency' => $currency,
+                'balance' => $balance,
+                'last_updated' => now()->toISOString(),
+            ];
+        }
+
+        return $balances;
+    }
+
+    /**
+     * Get account balances for all currencies
+     */
+    /**
+     * Get account balances for all currencies with currency summary
+     */
+    public function getAllAccountBalances($merchantId)
+    {
+        // Get all currencies for this merchant
+        $currencies = LedgerEntry::where('merchant_id', $merchantId)
+            ->distinct('currency')
+            ->pluck('currency')
+            ->toArray();
+
+        $allBalances = [];
+        $currencySummary = [];
+
+        foreach ($currencies as $currency) {
+            $currencyBalances = $this->getAccountBalancesByCurrency($merchantId, $currency);
+            $allBalances = array_merge($allBalances, $currencyBalances);
+
+            // Calculate currency summary
+            $totalBalance = array_sum(array_column($currencyBalances, 'balance'));
+            $currencySummary[$currency] = [
+                'currency' => $currency,
+                'total_balance' => $totalBalance,
+                'account_count' => count($currencyBalances),
+                'accounts' => $currencyBalances
+            ];
+        }
+
+        return [
+            'balances' => $allBalances,
+            'currency_summary' => $currencySummary,
+            'total_currencies' => count($currencies),
+            'available_currencies' => $currencies
+        ];
+    }
+
+    /**
+     * Get assets accounts summary for financial reports
+     */
+    public function getAssetAccountsSummary($merchantId, $currency = null)
+    {
+        $query = LedgerEntry::where('merchant_id', $merchantId)
+            ->where('account_type', 'assets');
+
+        if ($currency && $currency !== 'all') {
+            $query->where('currency', $currency);
+        }
+
+        $entries = $query->get()->groupBy('account_name');
+        $assets = [];
+
+        foreach ($entries as $accountName => $accountEntries) {
+            $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
+            $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
+            $balance = $debits - $credits; // Assets: debits increase balance
+
+            $assets[$accountName] = [
+                'debits' => $debits,
+                'credits' => $credits,
+                'balance' => $balance,
+                'entry_count' => $accountEntries->count(),
+                'currencies' => $accountEntries->pluck('currency')->unique()->values()->toArray()
+            ];
+        }
+
+        return $assets;
+    }
+
+    /**
+     * Get revenue accounts summary for financial reports
+     */
+    public function getRevenueAccountsSummary($merchantId, $currency = null)
+    {
+        $query = LedgerEntry::where('merchant_id', $merchantId)
+            ->where('account_type', 'revenue');
+
+        if ($currency && $currency !== 'all') {
+            $query->where('currency', $currency);
+        }
+
+        $entries = $query->get()->groupBy('account_name');
+        $revenue = [];
+
+        foreach ($entries as $accountName => $accountEntries) {
+            $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
+            $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
+            $balance = $credits - $debits; // Revenue: credits increase balance
+
+            $revenue[$accountName] = [
+                'debits' => $debits,
+                'credits' => $credits,
+                'balance' => $balance,
+                'entry_count' => $accountEntries->count(),
+                'currencies' => $accountEntries->pluck('currency')->unique()->values()->toArray()
+            ];
+        }
+
+        return $revenue;
     }
 }

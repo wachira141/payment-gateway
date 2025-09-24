@@ -20,26 +20,57 @@ class LedgerController extends Controller
     }
 
     /**
-     * Get financial report for merchant
+     * Get financial reports for merchant with multi-currency support
      */
-    public function getFinancialReport(Request $request): JsonResponse
+    public function getFinancialReports(Request $request): JsonResponse
     {
         try {
             $merchantId = $request->user()->merchant_id;
-            $startDate = $request->input('start_date', now()->subMonth()->format('Y-m-d'));
-            $endDate = $request->input('end_date', now()->format('Y-m-d'));
-            $currency = $request->input('currency');
+            $period = $request->input('period', 'monthly');
 
-            $report = $this->ledgerService->generateFinancialReport(
-                $merchantId,
-                $startDate,
-                $endDate,
-                $currency
-            );
+            $startDate = $request->input('start_date', now()->subMonth()->format('Y-m-d'));
+
+            $endDate = $request->input('end_date', now()->format('Y-m-d'));
+            $currency = $request->input('currency', null); // Allow null for all currencies
+
+            $startDateFormated = $this->endOfDay($startDate);
+            $endDateFormated = $this->endOfDay($endDate);
+
+            if ($currency && $currency !== 'all') {
+                // Single currency report
+                $report = $this->ledgerService->generateFinancialReport(
+                    $merchantId,
+                    $startDateFormated,
+                    $endDateFormated,
+                    $currency
+                );
+                $reports = [$report];
+            } else {
+                // Multi-currency report
+                $reports = $this->ledgerService->generateMultiCurrencyFinancialReport(
+                    $merchantId,
+                    $startDateFormated,
+                    $endDateFormated
+                );
+            }
 
             return response()->json([
                 'success' => true,
-                'data' => $report,
+                'data' => [
+                    'accounts' => [
+                        'assets' => $this->ledgerService->getAssetAccountsSummary($merchantId, $currency),
+                        'revenue' => $this->ledgerService->getRevenueAccountsSummary($merchantId, $currency)
+                    ],
+                    'totals' => [
+                        'total_credits' => array_sum(array_column($reports, 'total_volume')),
+                        'total_debits' => array_sum(array_column($reports, 'processing_fees')) + array_sum(array_column($reports, 'application_fees'))
+                    ],
+                    'period' => [
+                        'start' => $startDate,
+                        'end' => $endDate
+                    ],
+                    'reports' => $reports
+                ]
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -50,32 +81,45 @@ class LedgerController extends Controller
     }
 
     /**
-     * Get account balance
+     * Get account balances with multi-currency support
      */
-    public function getAccountBalance(Request $request): JsonResponse
+    /**
+     * Get account balances with multi-currency support
+     */
+    public function getAccountBalances(Request $request): JsonResponse
     {
         try {
             $merchantId = $request->user()->merchant_id;
-            $accountType = $request->input('account_type');
-            $accountName = $request->input('account_name');
             $currency = $request->input('currency');
 
-            $balance = $this->ledgerService->getAccountBalance(
-                $merchantId,
-                $accountType,
-                $accountName,
-                $currency
-            );
+            if ($currency && $currency !== 'all') {
+                // Single currency balances - return simple array for backward compatibility
+                $balances = $this->ledgerService->getAccountBalancesByCurrency($merchantId, $currency);
 
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'account_type' => $accountType,
-                    'account_name' => $accountName,
-                    'currency' => $currency,
-                    'balance' => $balance,
-                ],
-            ]);
+                return response()->json([
+                    'success' => true,
+                    'data' => $balances,
+                    'metadata' => [
+                        'currency_filter' => $currency,
+                        'is_single_currency' => true
+                    ]
+                ]);
+            } else {
+                // Multi-currency balances with enhanced structure
+                $result = $this->ledgerService->getAllAccountBalances($merchantId);
+
+                return response()->json([
+                    'success' => true,
+                    'data' => $result['balances'], // Keep simple array for frontend compatibility
+                    'metadata' => [
+                        'currency_summary' => $result['currency_summary'],
+                        'total_currencies' => $result['total_currencies'],
+                        'available_currencies' => $result['available_currencies'],
+                        'is_multi_currency' => true,
+                        'generated_at' => now()->toISOString()
+                    ]
+                ]);
+            }
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -93,11 +137,16 @@ class LedgerController extends Controller
             $merchantId = $request->user()->merchant_id;
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
+            $currency = $request->input('currency', 'USD');
+
+            // $startDate = $this->endOfDay($startDate);
+            // $endDate = $this->endOfDay($endDate);
 
             $validation = $this->validationService->validateTransactionBalance(
                 $merchantId,
                 $startDate,
-                $endDate
+                $endDate,
+                $currency
             );
 
             return response()->json([
@@ -113,7 +162,7 @@ class LedgerController extends Controller
     }
 
     /**
-     * Get account reconciliation report
+     * Get account reconciliation report with multi-currency support
      */
     public function getReconciliation(Request $request): JsonResponse
     {
@@ -122,7 +171,7 @@ class LedgerController extends Controller
             $accountType = $request->input('account_type');
             $currency = $request->input('currency');
 
-            $reconciliation = $this->validationService->getAccountReconciliation(
+            $reconciliation = $this->validationService->getMultiCurrencyReconciliation(
                 $merchantId,
                 $accountType,
                 $currency
@@ -141,7 +190,7 @@ class LedgerController extends Controller
     }
 
     /**
-     * Get gateway fee analysis
+     * Get gateway fee analysis with currency filtering
      */
     public function getGatewayFeeAnalysis(Request $request): JsonResponse
     {
@@ -149,11 +198,18 @@ class LedgerController extends Controller
             $merchantId = $request->user()->merchant_id;
             $startDate = $request->input('start_date', now()->subMonth()->format('Y-m-d'));
             $endDate = $request->input('end_date', now()->format('Y-m-d'));
+            $currency = $request->input('currency');
+            $gatewayCode = $request->input('gateway_code');
+
+            $startDate = $this->endOfDay($startDate);
+            $endDate = $this->endOfDay($endDate);
 
             $analysis = $this->validationService->getGatewayFeeAnalysis(
                 $merchantId,
                 $startDate,
-                $endDate
+                $endDate,
+                $currency,
+                $gatewayCode
             );
 
             return response()->json([
@@ -182,6 +238,52 @@ class LedgerController extends Controller
             return response()->json([
                 'success' => true,
                 'data' => $anomalies,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get ledger entries with pagination
+     */
+    public function getLedgerEntries(Request $request): JsonResponse
+    {
+        try {
+            $merchantId = $request->user()->merchant_id;
+            $accountType = $request->input('account_type');
+            $limit = (int) $request->input('limit', 50);
+            $offset = (int) $request->input('offset', 0);
+            $startDate = $request->input('start_date');
+            $endDate = $request->input('end_date');
+
+            $query = \App\Models\LedgerEntry::where('merchant_id', $merchantId);
+
+            if ($accountType) {
+                $query->where('account_type', $accountType);
+            }
+            if ($startDate) {
+                $query->where('posted_at', '>=', $startDate);
+            }
+            if ($endDate) {
+                $query->where('posted_at', '<=', $endDate);
+            }
+
+            $total = $query->count();
+            $entries = $query->orderBy('posted_at', 'desc')
+                ->offset($offset)
+                ->limit($limit)
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $entries->toArray(),
+                'total' => $total,
+                'limit' => $limit,
+                'offset' => $offset,
             ]);
         } catch (\Exception $e) {
             return response()->json([

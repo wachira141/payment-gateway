@@ -29,11 +29,14 @@ class BeneficiaryService extends BaseService
      */
     public function createBeneficiary(string $merchantId, array $data): array
     {
-        // Validate bank details based on type
-        $this->validateBeneficiaryData($data);
-
+        // Generate unique beneficiary ID
         $data['beneficiary_id'] = 'ben_' . Str::random(24);
         $data['merchant_id'] = $merchantId;
+        $data['status'] = 'active'; // Default to pending verification
+        $data['is_verified'] = false;
+
+        // Validate beneficiary data using dynamic configuration
+        $this->validateBeneficiaryDataDynamic($data);
 
         // If setting as default, remove default from other beneficiaries with same currency
         if (!empty($data['is_default']) && $data['is_default']) {
@@ -50,7 +53,7 @@ class BeneficiaryService extends BaseService
     public function updateBeneficiary(string $beneficiaryId, string $merchantId, array $data): ?array
     {
         $beneficiary = Beneficiary::findByIdAndMerchant($beneficiaryId, $merchantId);
-        
+
         if (!$beneficiary) {
             return null;
         }
@@ -87,7 +90,7 @@ class BeneficiaryService extends BaseService
                 if (empty($data['bank_code']) || empty($data['bank_name'])) {
                     throw new \Exception('Bank code and bank name are required for bank account beneficiaries');
                 }
-                
+
                 // Validate account number format for different countries
                 $this->validateAccountNumber($data['account_number'], $data['country']);
                 break;
@@ -96,7 +99,7 @@ class BeneficiaryService extends BaseService
                 if (empty($data['mobile_number'])) {
                     throw new \Exception('Mobile number is required for mobile money beneficiaries');
                 }
-                
+
                 // Validate mobile number format
                 $this->validateMobileNumber($data['mobile_number'], $data['country']);
                 break;
@@ -180,7 +183,7 @@ class BeneficiaryService extends BaseService
     {
         // Simulate bank account verification process
         // In real implementation, this would integrate with bank verification services
-        
+
         // For demo purposes, automatically verify after a short delay
         // In production, this would be handled by background jobs
         Beneficiary::updateById($beneficiaryId, [
@@ -210,7 +213,7 @@ class BeneficiaryService extends BaseService
     public function verifyBeneficiary(string $beneficiaryId, string $merchantId): array
     {
         $beneficiary = Beneficiary::findByIdAndMerchant($beneficiaryId, $merchantId);
-        
+
         if (!$beneficiary) {
             throw new \Exception('Beneficiary not found');
         }
@@ -221,7 +224,7 @@ class BeneficiaryService extends BaseService
 
         // Simulate verification process
         $verificationResult = $this->performBankVerification($beneficiary);
-        
+
         if ($verificationResult['success']) {
             return Beneficiary::updateById($beneficiaryId, [
                 'is_verified' => true,
@@ -244,10 +247,10 @@ class BeneficiaryService extends BaseService
     {
         // Simulate bank verification API call
         // In real implementation, this would integrate with banking APIs
-        
+
         // Simulate 95% success rate
         $success = rand(1, 100) > 5;
-        
+
         if ($success) {
             return [
                 'success' => true,
@@ -262,6 +265,129 @@ class BeneficiaryService extends BaseService
                 'success' => false,
                 'reason' => 'Account not found or inactive'
             ];
+        }
+    }
+
+
+
+    /**
+     * Validate beneficiary data using dynamic configuration
+     */
+    private function validateBeneficiaryDataDynamic(array $data): void
+    {
+        $methodType = $data['payout_method_id'] ?? null;
+        $country = $data['country'] ?? null;
+        $currency = $data['currency'] ?? null;
+
+        if (!$methodType || !$country || !$currency) {
+            throw new \Exception("Method type, country, and currency are required for beneficiary validation");
+        }
+
+        // Get required fields for this method
+        $requiredFields = \App\Models\SupportedPayoutMethod::getRequiredFields($methodType, $country, $currency);
+
+        if (empty($requiredFields)) {
+            // Fallback to legacy validation if no dynamic config found
+            $this->validateBeneficiaryData($data);
+            return;
+        }
+
+        // Validate each required field
+        foreach ($requiredFields as $fieldName => $fieldConfig) {
+            $isRequired = str_contains($fieldConfig['validation'] ?? '', 'required');
+
+            if ($isRequired && empty($data[$fieldName])) {
+                $label = $fieldConfig['label'] ?? $fieldName;
+                throw new \Exception("Field '{$label}' is required for {$methodType} beneficiaries");
+            }
+
+            // Perform type-specific validation
+            if (!empty($data[$fieldName])) {
+                $this->validateFieldByType($fieldName, $data[$fieldName], $fieldConfig, $data);
+            }
+        }
+    }
+
+    /**
+     * Validate individual field based on its type and configuration
+     */
+    private function validateFieldByType(string $fieldName, $value, array $fieldConfig, array $data): void
+    {
+        $fieldType = $fieldConfig['type'] ?? 'text';
+
+        switch ($fieldType) {
+            case 'phone':
+                $this->validateMobileNumber($value, $data['country']);
+                break;
+
+            case 'email':
+                if (!filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                    throw new \Exception("Invalid email format for field '{$fieldName}'");
+                }
+                break;
+
+            case 'bank_select':
+                // Bank code validation is handled in the request validation
+                break;
+
+            case 'text':
+            default:
+                // Basic text validation (length, format) can be added here
+                break;
+        }
+    }
+
+    /**
+     * Map method type to legacy type for backward compatibility
+     */
+    private function mapMethodTypeToLegacyType(string $methodType): string
+    {
+        $mapping = [
+            'bank_transfer' => 'bank_account',
+            'mobile_money' => 'mobile_money',
+            'international_wire' => 'bank_account',
+            'paypal' => 'paypal',
+            'stripe' => 'stripe',
+        ];
+
+        return $mapping[$methodType] ?? 'bank_account';
+    }
+
+    /**
+     * Validate bank account specific data
+     */
+    private function validateBankAccountData(array $data): void
+    {
+        $required = ['account_number', 'bank_code'];
+
+        foreach ($required as $field) {
+            if (empty($data[$field])) {
+                throw new \Exception("Field '{$field}' is required for bank account beneficiaries");
+            }
+        }
+
+        // Validate account number format
+        if (isset($data['account_number'])) {
+            $this->validateAccountNumber($data['account_number'], $data['country']);
+        }
+    }
+
+    /**
+     * Validate mobile money specific data
+     */
+    private function validateMobileMoneyData(array $data): void
+    {
+        $required = ['mobile_number'];
+
+        foreach ($required as $field) {
+            if (empty($data[$field])) {
+                throw new \Exception("Field '{$field}' is required for mobile money beneficiaries");
+            }
+        }
+
+        // Validate mobile number format
+        if (isset($data['mobile_number'])) {
+            $this->validateMobileNumber($data['mobile_number'], $data['country']);
         }
     }
 }

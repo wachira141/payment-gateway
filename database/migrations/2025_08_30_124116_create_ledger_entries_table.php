@@ -15,6 +15,7 @@ return new class extends Migration
             // Foreign key constraint
             $table->foreign('merchant_id')->references('merchant_id')->on('merchants')->onDelete('cascade');
             $table->string('transaction_id')->comment('Groups related debits/credits');
+            $table->string('related_id')->comment('ID of the related model (charge, payout, refund, etc.)');
             $table->morphs('related'); // creates related_type + related_id + index
             $table->comment('Related model (charge, payout, refund, etc.)');
             $table->enum('account_type', ['assets', 'liabilities', 'revenue', 'fees', 'fx_gains', 'fx_losses']);

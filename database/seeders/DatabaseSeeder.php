@@ -23,6 +23,8 @@ class DatabaseSeeder extends Seeder
             PaymentGatewaySeeder::class,
             LanguagesSeeder::class,
             DefaultGatewayPricingSeeder::class,
+            SupportedBanksSeeder::class,
+            SupportedPayoutMethodsSeeder::class,
         ]);
     }
 }

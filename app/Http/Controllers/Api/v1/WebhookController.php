@@ -10,6 +10,7 @@ use App\Services\CommissionCalculationService;
 use App\Services\WebhookProcessingService;
 use App\Services\GatewayPricingService;
 use App\Services\PaymentIntentService;
+use App\Services\WebhookEventService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
@@ -23,24 +24,27 @@ class WebhookController extends Controller
     protected $purchasedServiceService;
     protected $gatewayPricingService;
     protected $paymentIntentService;
+    protected $webhookEventService;
     protected $goalRequestService;
     protected $paymentProcessor;
     protected $mealPlanService;
     protected $bookingService;
     protected $services;
-   
+
 
     public function __construct(
-        PaymentProcessorService $paymentProcessor,
         CommissionCalculationService $commissionCalculationService,
         WebhookProcessingService $webhookProcessingService,
         GatewayPricingService $gatewayPricingService,
-        PaymentIntentService $paymentIntentService
+        PaymentIntentService $paymentIntentService,
+        PaymentProcessorService $paymentProcessor,
+        WebhookEventService $webhookEventService,
     ) {
         $this->commissionCalculationService = $commissionCalculationService;
         $this->webhookProcessingService = $webhookProcessingService;
         $this->gatewayPricingService = $gatewayPricingService;
         $this->paymentIntentService = $paymentIntentService;
+        $this->webhookEventService = $webhookEventService;
         $this->paymentProcessor = $paymentProcessor;
     }
 
@@ -98,8 +102,12 @@ class WebhookController extends Controller
             }
 
             // Create webhook record
+            $appId = $this->extractAppIdFromWebhook($request, $gatewayType);
+            Log::info("Extracted app ID from webhook: " . ($appId ?: 'null'));
+
             $webhook = PaymentWebhook::create([
                 'payment_gateway_id' => $gateway->id,
+                'merchant_app_id' => $appId,
                 'webhook_id' => Str::uuid(),
                 'event_type' => $eventType ?: $this->determineEventType($request, $gatewayType),
                 'gateway_event_id' => $this->extractEventId($request, $gatewayType),
@@ -124,8 +132,13 @@ class WebhookController extends Controller
                 }
             }
 
+            // $result = $this->webhookProcessingService->processWebhook($webhook);
+
             // For regular payment webhooks, use legacy processing for backward compatibility
             $result = $this->paymentProcessor->processWebhook($webhook, $gatewayType);
+
+            // Trigger outbound event handling
+            $this->webhookEventService->processIncomingWebhook($webhook, $result);
 
             if ($result['success']) {
                 $webhook->markProcessed();
@@ -165,27 +178,34 @@ class WebhookController extends Controller
      */
     private function determineEventType(Request $request, string $gatewayType): string
     {
+        $gatewayMappings = WebhookEventService::getGatewayEventMappings($gatewayType);
+
         switch ($gatewayType) {
             case 'mpesa':
                 // Check if it's B2C callback
                 if ($request->has('Result')) {
                     $resultCode = $request->input('Result.ResultCode');
-                    return $resultCode == 0 ? 'disbursement.completed' : 'disbursement.failed';
+                    $rawEvent = $resultCode == 0 ? 'b2c_success' : 'b2c_failure';
+                    return $gatewayMappings[$rawEvent] ?? 'disbursement.' . ($resultCode == 0 ? 'completed' : 'failed');
                 }
                 // STK Push callback
                 if ($request->has('Body.stkCallback')) {
                     $resultCode = $request->input('Body.stkCallback.ResultCode');
-                    return $resultCode == 0 ? 'payment.completed' : 'payment.failed';
+                    $rawEvent = $resultCode == 0 ? 'stk_success' : 'stk_failure';
+                    return $gatewayMappings[$rawEvent] ?? 'payment.' . ($resultCode == 0 ? 'completed' : 'failed');
                 }
                 return 'unknown';
             case 'stripe':
-                return $request->input('type', 'unknown');
+                $stripeEventType = $request->input('type', 'unknown');
+                return $gatewayMappings[$stripeEventType] ?? $stripeEventType;
             case 'telebirr':
-                return $request->header('X-Event-Type', 'unknown');
+                $telebirrEventType = $request->header('X-Event-Type', 'unknown');
+                return $gatewayMappings[$telebirrEventType] ?? $telebirrEventType;
             default:
                 return 'unknown';
         }
     }
+
 
     /**
      * Extract event ID from webhook payload based on gateway type
@@ -260,10 +280,21 @@ class WebhookController extends Controller
     /**
      * Get webhook logs
      */
+
     public function getLogs(Request $request)
     {
-        $query = PaymentWebhook::with('paymentGateway')
+        $merchantId = $request->user()->merchant_id;
+
+        $query = PaymentWebhook::with(['paymentGateway', 'merchantApp'])
+            ->whereHas('merchantApp', function ($q) use ($merchantId) {
+                $q->where('merchant_id', $merchantId);
+            })
             ->orderBy('created_at', 'desc');
+
+        // Filter by specific app if provided
+        if ($request->filled('app_id')) {
+            $query->where('merchant_app_id', $request->app_id);
+        }
 
         // Filter by gateway type
         if ($request->filled('gateway_type') && $request->gateway_type !== 'all') {
@@ -294,7 +325,7 @@ class WebhookController extends Controller
 
         $webhooks = $query->paginate($request->get('per_page', 20));
 
-        // Transform the response to flatten gateway_type and event_id
+        // Transform the response to include app information
         $webhooks->getCollection()->transform(function ($webhook) {
             return [
                 'id' => $webhook->id,
@@ -302,10 +333,12 @@ class WebhookController extends Controller
                 'event_type' => $webhook->event_type,
                 'event_id' => $webhook->gateway_event_id,
                 'gateway_type' => $webhook->paymentGateway ? $webhook->paymentGateway->type : null,
+                'app_id' => $webhook->merchant_app_id,
+                'app_name' => $webhook->merchantApp ? $webhook->merchantApp->name : null,
                 'status' => $webhook->status,
                 'retry_count' => $webhook->retry_count,
                 'payload' => $webhook->payload,
-                'error' => $webhook->error,
+                'error' => $webhook->processing_error,
                 'created_at' => $webhook->created_at,
                 'processed_at' => $webhook->processed_at,
             ];
@@ -316,6 +349,7 @@ class WebhookController extends Controller
             'data' => $webhooks,
         ]);
     }
+
 
 
     /**
@@ -448,6 +482,48 @@ class WebhookController extends Controller
 
         if (!empty($updateData)) {
             $transaction->update($updateData);
+        }
+    }
+
+    /**
+     * Extract app ID from webhook payload or related payment intent
+     */
+    private function extractAppIdFromWebhook(Request $request, string $gatewayType): ?string
+    {
+        try {
+            // Try to get app_id from payment intent reference
+            $eventId = $this->extractEventId($request, $gatewayType);
+            Log::info("Extracted event ID from webhook: " . ($eventId ?: 'null'));
+            if ($eventId) {
+                // For Stripe webhooks, lookup payment intent by stripe_payment_intent_id
+                if ($gatewayType === 'stripe' && $request->has('data.object.id')) {
+                    $stripePaymentIntentId = $request->input('data.object.id');
+                    $paymentIntent = \App\Models\PaymentIntent::where('gateway_payment_intent_id', $stripePaymentIntentId)->first();
+                    if ($paymentIntent) {
+                        return $paymentIntent->merchant_app_id;
+                    }
+                }
+
+                // For M-Pesa, try to find by checkout request ID or conversation ID
+                if ($gatewayType === 'mpesa') {
+                    $paymentIntent = \App\Models\PaymentIntent::where('gateway_data->checkout_request_id', $eventId)
+                        ->orWhere('intent_id', $eventId)
+                        ->first();
+                    Log::info(json_encode($paymentIntent));
+                    if ($paymentIntent) {
+                        return $paymentIntent->merchant_app_id;
+                    }
+                }
+            }
+
+            return null;
+        } catch (\Exception $e) {
+            Log::warning('Failed to extract app_id from webhook', [
+                'gateway_type' => $gatewayType,
+                'event_id' => $eventId ?? null,
+                'error' => $e->getMessage()
+            ]);
+            return null;
         }
     }
 }

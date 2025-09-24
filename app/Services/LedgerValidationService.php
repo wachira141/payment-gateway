@@ -14,7 +14,7 @@ class LedgerValidationService
     public function validateTransactionBalance($merchantId, $startDate = null, $endDate = null): array
     {
         $query = LedgerEntry::where('merchant_id', $merchantId);
-        
+
         if ($startDate) {
             $query->where('posted_at', '>=', $startDate);
         }
@@ -24,7 +24,7 @@ class LedgerValidationService
 
         $entries = $query->get();
         $transactionGroups = $entries->groupBy('transaction_id');
-        
+
         $unbalancedTransactions = [];
         $totalDebits = 0;
         $totalCredits = 0;
@@ -32,10 +32,10 @@ class LedgerValidationService
         foreach ($transactionGroups as $transactionId => $transactionEntries) {
             $debits = $transactionEntries->where('entry_type', 'debit')->sum('amount');
             $credits = $transactionEntries->where('entry_type', 'credit')->sum('amount');
-            
+
             $totalDebits += $debits;
             $totalCredits += $credits;
-            
+
             if (abs($debits - $credits) > 0.01) { // Allow for minor floating point differences
                 $unbalancedTransactions[] = [
                     'transaction_id' => $transactionId,
@@ -64,7 +64,7 @@ class LedgerValidationService
     public function getAccountReconciliation($merchantId, $accountType = null, $currency = null): array
     {
         $query = LedgerEntry::where('merchant_id', $merchantId);
-        
+
         if ($accountType) {
             $query->where('account_type', $accountType);
         }
@@ -79,10 +79,10 @@ class LedgerValidationService
             foreach ($accountGroups as $name => $accountEntries) {
                 $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
                 $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
-                
+
                 // Calculate balance based on account type
                 $balance = in_array($type, ['assets', 'fees']) ? $debits - $credits : $credits - $debits;
-                
+
                 $accounts[$type][$name] = [
                     'debits' => $debits,
                     'credits' => $credits,
@@ -96,10 +96,10 @@ class LedgerValidationService
         return $accounts;
     }
 
-    /**
-     * Get gateway fee analysis
+     /**
+     * Get gateway fee analysis with currency and gateway filtering
      */
-    public function getGatewayFeeAnalysis($merchantId, $startDate = null, $endDate = null): array
+    public function getGatewayFeeAnalysis($merchantId, $startDate = null, $endDate = null, $currency = null, $gatewayCode = null): array
     {
         $query = LedgerEntry::where('merchant_id', $merchantId)
             ->whereIn('account_name', ['gateway_processing_fees', 'platform_application_fees']);
@@ -110,20 +110,28 @@ class LedgerValidationService
         if ($endDate) {
             $query->where('posted_at', '<=', $endDate);
         }
+        if ($currency && $currency !== 'all') {
+            $query->where('currency', $currency);
+        }
 
         $entries = $query->get();
         $analysis = [];
 
         foreach ($entries as $entry) {
             $metadata = $entry->metadata ?? [];
-            $gatewayCode = $metadata['gateway_code'] ?? 'unknown';
+            $entryGatewayCode = $metadata['gateway_code'] ?? 'unknown';
             $paymentMethodType = $metadata['payment_method_type'] ?? 'unknown';
             
-            $key = "{$gatewayCode}_{$paymentMethodType}_{$entry->currency}";
+            // Filter by gateway code if specified
+            if ($gatewayCode && $entryGatewayCode !== $gatewayCode) {
+                continue;
+            }
+            
+            $key = "{$entryGatewayCode}_{$paymentMethodType}_{$entry->currency}";
             
             if (!isset($analysis[$key])) {
                 $analysis[$key] = [
-                    'gateway_code' => $gatewayCode,
+                    'gateway_code' => $entryGatewayCode,
                     'payment_method_type' => $paymentMethodType,
                     'currency' => $entry->currency,
                     'processing_fees' => 0,
@@ -142,11 +150,44 @@ class LedgerValidationService
             $analysis[$key]['transaction_count']++;
         }
 
-        // Calculate averages and totals
-        foreach ($analysis as &$data) {
+        // Get volume data from revenue entries to calculate accurate rates
+        $revenueQuery = LedgerEntry::where('merchant_id', $merchantId)
+            ->where('account_name', 'payment_processing_revenue')
+            ->whereBetween('posted_at', [$startDate, $endDate]);
+
+        if ($currency && $currency !== 'all') {
+            $revenueQuery->where('currency', $currency);
+        }
+
+        $revenueEntries = $revenueQuery->get();
+        $volumeByGateway = [];
+
+        foreach ($revenueEntries as $entry) {
+            $metadata = $entry->metadata ?? [];
+            $entryGatewayCode = $metadata['gateway_code'] ?? 'unknown';
+            $paymentMethodType = $metadata['payment_method_type'] ?? 'unknown';
+            
+            if ($gatewayCode && $entryGatewayCode !== $gatewayCode) {
+                continue;
+            }
+            
+            $key = "{$entryGatewayCode}_{$paymentMethodType}_{$entry->currency}";
+            
+            if (!isset($volumeByGateway[$key])) {
+                $volumeByGateway[$key] = ['volume' => 0, 'transactions' => 0];
+            }
+            
+            $volumeByGateway[$key]['volume'] += $entry->amount;
+            $volumeByGateway[$key]['transactions']++;
+        }
+
+        // Calculate accurate rates using actual volume data
+        foreach ($analysis as $key => &$data) {
+            $volume = $volumeByGateway[$key]['volume'] ?? 0;
+            $data['total_volume'] = $volume;
             $data['total_fees'] = $data['processing_fees'] + $data['application_fees'];
-            $data['avg_processing_fee'] = $data['transaction_count'] > 0 ? $data['processing_fees'] / $data['transaction_count'] : 0;
-            $data['avg_application_fee'] = $data['transaction_count'] > 0 ? $data['application_fees'] / $data['transaction_count'] : 0;
+            $data['effective_rate'] = $volume > 0 ? $data['total_fees'] / $volume : 0;
+            $data['transaction_count'] = $volumeByGateway[$key]['transactions'] ?? $data['transaction_count'];
         }
 
         return array_values($analysis);
@@ -188,6 +229,113 @@ class LedgerValidationService
             'large_transactions' => $largeTransactions->toArray(),
             'high_entry_transactions' => $duplicateEntries,
             'high_volume_accounts' => $recentHighVolumeAccounts,
+        ];
+    }
+
+    /*
+    * Get multi-currency reconciliation report matching frontend interface
+    */
+      /**
+     * Get multi-currency reconciliation with enhanced currency metadata
+     */
+    public function getMultiCurrencyReconciliation($merchantId, $accountType = null, $currency = null)
+    {
+        $query = LedgerEntry::where('merchant_id', $merchantId);
+
+        if ($accountType) {
+            $query->where('account_type', $accountType);
+        }
+
+        if ($currency && $currency !== 'all') {
+            $query->where('currency', $currency);
+        }
+
+        $entries = $query->get();
+        
+        // Group by account type and currency
+        $reconciliation = [
+            'assets' => [],
+            'revenue' => []
+        ];
+
+        $currencyTotals = [];
+        $allCurrencies = [];
+        
+        foreach ($entries as $entry) {
+            $accountType = $entry->account_type;
+            $accountName = $entry->account_name;
+            $entryCurrency = $entry->currency;
+
+            if (!in_array($entryCurrency, $allCurrencies)) {
+                $allCurrencies[] = $entryCurrency;
+            }
+
+            if (!isset($reconciliation[$accountType][$accountName])) {
+                $reconciliation[$accountType][$accountName] = [
+                    'debits' => 0,
+                    'credits' => 0,
+                    'balance' => 0,
+                    'entry_count' => 0,
+                    'currencies' => []
+                ];
+            }
+
+            $account = &$reconciliation[$accountType][$accountName];
+            
+            if ($entry->entry_type === 'debit') {
+                $account['debits'] += $entry->amount;
+            } else {
+                $account['credits'] += $entry->amount;
+            }
+            
+            $account['entry_count']++;
+            
+            if (!in_array($entryCurrency, $account['currencies'])) {
+                $account['currencies'][] = $entryCurrency;
+            }
+
+            // Track currency totals
+            if (!isset($currencyTotals[$entryCurrency])) {
+                $currencyTotals[$entryCurrency] = [
+                    'debits' => 0, 
+                    'credits' => 0,
+                    'balance' => 0,
+                    'transaction_count' => 0
+                ];
+            }
+            
+            if ($entry->entry_type === 'debit') {
+                $currencyTotals[$entryCurrency]['debits'] += $entry->amount;
+            } else {
+                $currencyTotals[$entryCurrency]['credits'] += $entry->amount;
+            }
+            $currencyTotals[$entryCurrency]['transaction_count']++;
+        }
+
+        // Calculate balances based on account type
+        foreach (['assets', 'revenue'] as $type) {
+            foreach ($reconciliation[$type] as &$account) {
+                if ($type === 'assets') {
+                    $account['balance'] = $account['debits'] - $account['credits'];
+                } else {
+                    $account['balance'] = $account['credits'] - $account['debits'];
+                }
+            }
+        }
+
+        // Calculate currency balance differences
+        foreach ($currencyTotals as $curr => &$totals) {
+            $totals['balance'] = $totals['credits'] - $totals['debits'];
+        }
+
+        return [
+            'assets' => $reconciliation['assets'],
+            'revenue' => $reconciliation['revenue'],
+            'currency_summary' => $currencyTotals,
+            'available_currencies' => $allCurrencies,
+            'total_currencies' => count($allCurrencies),
+            'period' => 'Current',
+            'generated_at' => now()->toISOString()
         ];
     }
 }

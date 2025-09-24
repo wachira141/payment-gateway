@@ -19,6 +19,9 @@ use App\Http\Controllers\Api\v1\ApplicationDataController;
 use App\Http\Controllers\Api\v1\PaymentController;
 use App\Http\Controllers\Api\v1\LedgerController;
 use App\Http\Controllers\Api\v1\WebhookFlowController;
+use App\Http\Controllers\Api\v1\FXController;
+use App\Http\Controllers\Api\v1\SupportedBankController;
+use App\Http\Controllers\Api\v1\SupportedPayoutMethodController;
 
 Route::prefix('v1')->group(function () {
     // Public merchant authentication routes
@@ -156,8 +159,8 @@ Route::prefix('v1')->group(function () {
 
         // Ledger and Financial Reports
         Route::prefix('ledger')->group(function () {
-            Route::get('reports', [LedgerController::class, 'getFinancialReport']);
-            Route::get('balances', [LedgerController::class, 'getAccountBalance']);
+            Route::get('reports', [LedgerController::class, 'getFinancialReports']);
+            Route::get('balances', [LedgerController::class, 'getAccountBalances']);
             Route::get('validate', [LedgerController::class, 'validateLedger']);
             Route::get('reconciliation', [LedgerController::class, 'getReconciliation']);
             Route::get('gateway-analysis', [LedgerController::class, 'getGatewayFeeAnalysis']);
@@ -232,6 +235,18 @@ Route::prefix('v1')->group(function () {
         Route::get('balances', [BalanceController::class, 'index']);
         Route::get('balances/{currency}', [BalanceController::class, 'show']);
         Route::get('balances/{currency}/transactions', [BalanceController::class, 'transactions']);
+
+        //fx trades
+        Route::prefix('fx')->group(function () {
+            Route::post('quotes', [FXController::class, 'getQuotes']);
+            Route::post('trades', [FXController::class, 'executeTrade']);
+            Route::get('trades', [FXController::class, 'getTradeHistory']);
+            Route::get('rates', [FXController::class, 'getExchangeRates']);
+        });
+
+        // Supported Banks and Payout Methods
+        Route::get('supported-banks', [SupportedBankController::class, 'index']);
+        Route::get('supported-payout-methods', [SupportedPayoutMethodController::class, 'index']);
     });
 
     // Public webhook endpoints (no auth required)

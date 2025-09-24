@@ -95,10 +95,13 @@ class LedgerEntry extends BaseModel
 
             // Ensure double-entry bookkeeping
             if ($totalDebits != $totalCredits) {
-                throw new \Exception('Debits must equal credits in double-entry transaction');
+                $totals = [
+                    'debits' => $totalDebits,
+                    'credits' => $totalCredits
+                ];
+                throw new \Exception('Debits must equal credits in double-entry transaction' . json_encode($totals));
             }
         });
-
         return $createdEntries;
     }
 

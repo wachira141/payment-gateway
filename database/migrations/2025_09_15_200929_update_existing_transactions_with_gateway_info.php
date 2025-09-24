@@ -11,28 +11,31 @@ return new class extends Migration
     public function up(): void
     {
         // Update existing transactions with gateway information based on payment gateway type
-        DB::statement("
-            UPDATE payment_transactions pt
-            INNER JOIN payment_gateways pg ON pt.payment_gateway_id = pg.id
-            SET 
-                pt.gateway_code = CASE 
-                    WHEN pg.type = 'stripe' THEN 'stripe'
-                    WHEN pg.type = 'mpesa' THEN 'mpesa'
-                    WHEN pg.type = 'telebirr' THEN 'telebirr'
-                    ELSE pg.type
-                END,
-                pt.payment_method_type = CASE 
-                    WHEN pg.type = 'stripe' THEN 'card'
-                    WHEN pg.type = 'mpesa' THEN 'mobile_money'
-                    WHEN pg.type = 'telebirr' THEN 'mobile_money'
-                    WHEN pg.type LIKE '%bank%' THEN 'bank_transfer'
-                    ELSE 'unknown'
-                END
-            WHERE pt.gateway_code IS NULL OR pt.payment_method_type IS NULL
-        ");
+        $updatedCount = DB::table('payment_transactions as pt')
+            ->join('payment_gateways as pg', 'pt.payment_gateway_id', '=', 'pg.id')
+            ->whereNull('pt.gateway_code')
+            ->orWhereNull('pt.payment_method_type')
+            ->update([
+                'pt.gateway_code' => DB::raw("
+                    CASE 
+                        WHEN pg.type = 'stripe' THEN 'stripe'
+                        WHEN pg.type = 'mpesa' THEN 'mpesa'
+                        WHEN pg.type = 'telebirr' THEN 'telebirr'
+                        ELSE pg.type
+                    END
+                "),
+                'pt.payment_method_type' => DB::raw("
+                    CASE 
+                        WHEN pg.type = 'stripe' THEN 'card'
+                        WHEN pg.type = 'mpesa' THEN 'mobile_money'
+                        WHEN pg.type = 'telebirr' THEN 'mobile_money'
+                        WHEN pg.type LIKE '%bank%' THEN 'bank_transfer'
+                        ELSE 'unknown'
+                    END
+                ")
+            ]);
 
         // Log the update
-        $updatedCount = DB::affectedRows();
         Log::info("Updated {$updatedCount} existing transactions with gateway information");
     }
 

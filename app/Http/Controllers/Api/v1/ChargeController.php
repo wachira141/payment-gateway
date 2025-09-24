@@ -32,7 +32,7 @@ class ChargeController extends Controller
             ];
 
             $charges = $this->chargeService->getChargesForMerchant(
-                $request->user()->id,
+                $request->user()->merchant_id,
                 $filters
             );
 

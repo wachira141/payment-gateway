@@ -3,6 +3,8 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use App\Models\SupportedPayoutMethod;
+use App\Models\SupportedBank;
 
 class CreateBeneficiaryRequest extends FormRequest
 {
@@ -15,20 +17,54 @@ class CreateBeneficiaryRequest extends FormRequest
     {
         $rules = [
             'name' => 'required|string|max:255',
-            'type' => 'required|in:bank_account,mobile_money',
+            'payout_method_id' => 'required|string',
             'currency' => 'required|string|size:3',
             'country' => 'required|string|size:2',
             'is_default' => 'boolean',
             'metadata' => 'array',
         ];
 
-        if ($this->input('type') === 'bank_account') {
-            $rules['account_number'] = 'required|string|max:50';
-            $rules['bank_code'] = 'required|string|max:20';
-            $rules['bank_name'] = 'required|string|max:255';
-        } elseif ($this->input('type') === 'mobile_money') {
-            $rules['mobile_number'] = 'required|string|max:20';
+        // Get dynamic validation rules based on method type
+        $methodType = $this->input('payout_method_id');
+        $country = $this->input('country');
+        $currency = $this->input('currency');
+
+        if ($methodType && $country && $currency) {
+            // Validate method type exists for country/currency
+            $rules['payout_method_id'] = [
+                'required',
+                'string',
+                function ($attribute, $value, $fail) use ($country, $currency) {
+                    $method = SupportedPayoutMethod::getMethodByType($value, $country, $currency);
+                    if (!$method) {
+                        $fail('The selected payout method is not supported for the specified country and currency.');
+                    }
+                }
+            ];
+            
+            // Add dynamic field validation rules
+            $dynamicRules = SupportedPayoutMethod::getValidationRules($methodType, $country, $currency);
+
+            // Add custom validation for specific field types
+            foreach ($dynamicRules as $field => $rule) {
+                if ($field === 'bank_code' && str_contains($rule, 'required')) {
+                    $rules[$field] = [
+                        'required',
+                        'string',
+                        'max:20',
+                        function ($attribute, $value, $fail) use ($country) {
+                            if (!SupportedBank::validateBankForCountry($value, $country)) {
+                                $fail('The selected bank is not supported for the specified country.');
+                            }
+                        }
+                    ];
+                } else {
+                    $rules[$field] = $rule;
+                }
+            }
         }
+
+
 
         return $rules;
     }
@@ -37,16 +73,16 @@ class CreateBeneficiaryRequest extends FormRequest
     {
         return [
             'name.required' => 'Beneficiary name is required.',
-            'type.required' => 'Beneficiary type is required.',
-            'type.in' => 'Beneficiary type must be either bank_account or mobile_money.',
+            'payout_method_id.required' => 'Payout method is required.',
             'currency.required' => 'Currency is required.',
             'currency.size' => 'Currency must be a 3-letter code.',
             'country.required' => 'Country is required.',
             'country.size' => 'Country must be a 2-letter code.',
-            'account_number.required' => 'Account number is required for bank accounts.',
-            'bank_code.required' => 'Bank code is required for bank accounts.',
-            'bank_name.required' => 'Bank name is required for bank accounts.',
-            'mobile_number.required' => 'Mobile number is required for mobile money.',
+            'account_number.required' => 'Account number is required.',
+            'bank_code.required' => 'Bank selection is required.',
+            'mobile_number.required' => 'Mobile number is required.',
+            'email.required' => 'Email address is required.',
+            'account_id.required' => 'Account ID is required.',
         ];
     }
 }

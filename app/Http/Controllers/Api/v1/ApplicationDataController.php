@@ -41,10 +41,11 @@ class ApplicationDataController extends Controller
                 'hours' => $this->applicationDataService->getHours(),
                 'countriesAndCurrencies' => $this->applicationDataService->getCountriesAndCurrencies(),
                 'systemLanguages' => $this->applicationDataService->getSystemLanguages(),
+                'applicationStatuses' => $this->applicationDataService->getApplicationStatuses(),
             ]);
         }
 
-        
+
         // Return specific data based on the query parameter
         switch ($type) {
             case 'hours':
@@ -55,6 +56,16 @@ class ApplicationDataController extends Controller
                 return response()->json(['languages' => $this->applicationDataService->getLanguages()]);
             case 'systemLanguages':
                 return response()->json(['systemLanguages' => $this->applicationDataService->getSystemLanguages()]);
+            case 'supportedBanks':
+                $countryCode = $request->input('country_code');
+                return response()->json(['supportedBanks' => $this->applicationDataService->getSupportedBanks($countryCode)]);
+            case 'supportedPayoutMethods':
+                $countryCode = $request->input('country_code');
+                $currency = $request->input('currency');
+                return response()->json(['supportedPayoutMethods' => $this->applicationDataService->getSupportedPayoutMethods($countryCode, $currency)]);
+            case 'applicationStatuses':
+                return response()->json(['applicationStatuses' => $this->applicationDataService->getApplicationStatuses()]);
+
             default:
                 return response()->json(['error' => 'Invalid type specified'], 400);
         }

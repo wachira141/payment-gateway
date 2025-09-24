@@ -31,7 +31,7 @@ class BalanceService extends BaseService
     public function getOrCreateBalance(string $merchantId, string $currency): MerchantBalance
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance) {
             $balance = MerchantBalance::create([
                 'merchant_id' => $merchantId,
@@ -52,7 +52,7 @@ class BalanceService extends BaseService
     public function hasSufficientBalance(string $merchantId, string $currency, float $amount, string $type = 'available'): bool
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance) {
             return false;
         }
@@ -76,19 +76,19 @@ class BalanceService extends BaseService
     {
         $query = LedgerEntry::where('merchant_id', $merchantId)
             ->whereIn('account_name', ['merchant_balance_available', 'merchant_balance_pending', 'merchant_balance_reserved']);
-        
+
         if ($currency) {
             $query->where('currency', $currency);
         }
-        
+
         if ($dateFrom) {
             $query->where('posted_at', '>=', $dateFrom);
         }
-        
+
         if ($dateTo) {
             $query->where('posted_at', '<=', $dateTo);
         }
-        
+
         return $query->orderBy('posted_at', 'desc')->get();
     }
 
@@ -98,7 +98,7 @@ class BalanceService extends BaseService
     public function getBalanceSummary(string $merchantId): array
     {
         $balances = $this->getAllMerchantBalances($merchantId);
-        
+
         $summary = [
             'total_currencies' => $balances->count(),
             'balances_by_currency' => [],
@@ -106,7 +106,7 @@ class BalanceService extends BaseService
             'total_pending' => 0,
             'total_reserved' => 0,
         ];
-        
+
         foreach ($balances as $balance) {
             $summary['balances_by_currency'][$balance->currency] = [
                 'available' => $balance->available_amount,
@@ -114,13 +114,13 @@ class BalanceService extends BaseService
                 'reserved' => $balance->reserved_amount,
                 'total' => $balance->getTotalBalance(),
             ];
-            
+
             // Convert to base currency for totals (simplified - in real app you'd use exchange rates)
             $summary['total_available'] += $balance->available_amount;
             $summary['total_pending'] += $balance->pending_amount;
             $summary['total_reserved'] += $balance->reserved_amount;
         }
-        
+
         return $summary;
     }
 
@@ -131,13 +131,13 @@ class BalanceService extends BaseService
     public function settlePendingBalance(string $merchantId, string $currency, ?float $amount = null): MerchantBalance
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance) {
             throw new \Exception('Merchant balance not found');
         }
-        
+
         $settleAmount = $amount ?? $balance->pending_amount;
-        
+
         if ($settleAmount > $balance->pending_amount) {
             throw new \Exception('Insufficient pending balance');
         }
@@ -148,7 +148,7 @@ class BalanceService extends BaseService
 
         // This will be handled by LedgerService to ensure proper accounting
         app(LedgerService::class)->recordBalanceSettlement($balance, $settleAmount);
-        
+
         return $balance->fresh();
     }
 
@@ -158,13 +158,13 @@ class BalanceService extends BaseService
     public function reserveBalance(string $merchantId, string $currency, float $amount, string $reason, ?string $referenceId = null): MerchantBalance
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance || !$balance->hasSufficientAvailable($amount)) {
             throw new \Exception('Insufficient available balance for reservation');
         }
 
         $balance->reserve($amount);
-        
+
         return $balance->fresh();
     }
 
@@ -174,13 +174,13 @@ class BalanceService extends BaseService
     public function releaseReservedBalance(string $merchantId, string $currency, float $amount, string $reason, ?string $referenceId = null): MerchantBalance
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance || $balance->reserved_amount < $amount) {
             throw new \Exception('Insufficient reserved balance to release');
         }
 
         $balance->releaseReserved($amount);
-        
+
         return $balance->fresh();
     }
 
@@ -190,13 +190,13 @@ class BalanceService extends BaseService
     public function debitAvailableBalance(string $merchantId, string $currency, float $amount, string $reason, ?string $referenceId = null): MerchantBalance
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance || !$balance->hasSufficientAvailable($amount)) {
             throw new \Exception('Insufficient available balance');
         }
 
         $balance->debitAvailable($amount);
-        
+
         return $balance->fresh();
     }
 
@@ -206,7 +206,7 @@ class BalanceService extends BaseService
     public function getBalanceForCurrency(string $merchantId, string $currency): array
     {
         $balance = $this->getMerchantBalance($merchantId, $currency);
-        
+
         if (!$balance) {
             return [
                 'available' => 0,
@@ -230,7 +230,7 @@ class BalanceService extends BaseService
     public function getFormattedBalances(string $merchantId): array
     {
         $balances = $this->getAllMerchantBalances($merchantId);
-        
+
         return $balances->map(function ($balance) {
             return [
                 'currency' => $balance->currency,
@@ -241,5 +241,57 @@ class BalanceService extends BaseService
                 'last_transaction_at' => $balance->last_transaction_at ? $balance->last_transaction_at->timestamp : null,
             ];
         })->toArray();
+    }
+
+    /**
+     * Process reserved balance (convert reservation to actual debit)
+     * Used when a reserved transaction completes (e.g., payout processed)
+     */
+    public function processReservedBalance(string $merchantId, string $currency, float $amount, string $reason, ?string $referenceId = null): MerchantBalance
+    {
+        try {
+            //code...
+            $balance = $this->getMerchantBalance($merchantId, $currency);
+            
+        if (!$balance || $balance->reserved_amount < $amount) {
+            throw new \Exception('Insufficient reserved balance to process');
+        }
+
+        // Deduct from reserved amount (completing the transaction)
+        $balance->reserved_amount -= $amount;
+        $balance->last_transaction_at = now();
+        $balance->save();
+
+        // Record the transaction in ledger
+        // Record the transaction in ledger using double-entry bookkeeping
+        LedgerEntry::createTransaction(
+            $merchantId,
+            $balance, // Related model
+            [
+                [
+                    'account_type' => 'assets',
+                    'account_name' => 'merchant_balance_available',
+                    'entry_type' => 'debit',
+                    'amount' => $amount,
+                    'currency' => $currency,
+                    'description' => "{$reason} - Reserved balance processed",
+                    'metadata' => ['reference_id' => $referenceId, 'operation' => 'process_reserved'],
+                ],
+                [
+                    'account_type' => 'assets',
+                    'account_name' => 'merchant_balance_reserved',
+                    'entry_type' => 'credit',
+                    'amount' => $amount,
+                    'currency' => $currency,
+                    'description' => "{$reason} - Reserved balance processed",
+                    'metadata' => ['reference_id' => $referenceId, 'operation' => 'process_reserved'],
+                    ]
+                    ]
+                );
+                
+                return $balance->fresh();
+            } catch (\Exception $e) {
+                throw new \Exception('Error processing reserved balance: ' . $e->getMessage());
+            }
     }
 }

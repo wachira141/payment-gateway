@@ -151,7 +151,7 @@ class PaymentIntent extends BaseModel
      */
     public static function findByPaymentIntentId(string $paymentIntentId)
     {
-        return static::where('intent_id', $paymentIntentId)->first();
+        return static::where('id', $paymentIntentId)->first();
     }
 
     /**

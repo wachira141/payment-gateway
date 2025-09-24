@@ -31,7 +31,7 @@ class SettlementController extends Controller
             ];
 
             $settlements = $this->settlementService->getSettlementsForMerchant(
-                $request->user()->id,
+                $request->user()->merchant_id,
                 $filters
             );
 

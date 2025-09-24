@@ -12,7 +12,6 @@ return new class extends Migration
             $table->decimal('gateway_processing_fee', 15, 4)->nullable()->after('fee_amount');
             $table->decimal('platform_application_fee', 15, 4)->nullable()->after('gateway_processing_fee');
             $table->string('gateway_code', 50)->nullable()->after('platform_application_fee');
-            $table->string('payment_method_type', 50)->nullable()->after('gateway_code');
             
             $table->index(['gateway_code', 'payment_method_type']);
         });

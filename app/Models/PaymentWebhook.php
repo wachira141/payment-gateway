@@ -9,6 +9,7 @@ class PaymentWebhook extends BaseModel
 {
     protected $fillable = [
         'payment_gateway_id',
+        'merchant_app_id',
         'webhook_id',
         'event_type',
         'gateway_event_id',
@@ -17,7 +18,7 @@ class PaymentWebhook extends BaseModel
         'processing_error',
         'retry_count',
         'processed_at',
-         'correlation_id',
+        'correlation_id',
         'replay_of_webhook_id'
     ];
 
@@ -33,6 +34,15 @@ class PaymentWebhook extends BaseModel
     public function paymentGateway()
     {
         return $this->belongsTo(PaymentGateway::class);
+    }
+
+
+    /**
+     * Get the associated merchant app
+     */
+    public function merchantApp()
+    {
+        return $this->belongsTo(App::class, 'merchant_app_id', 'id');
     }
 
     /**
@@ -94,10 +104,17 @@ class PaymentWebhook extends BaseModel
     /**
      * Get webhooks with filters
      */
+    /**
+     * Get webhooks with filters
+     */
     public static function getWebhooksWithFilters(array $filters = [], $perPage = 20)
     {
-        $query = static::with('paymentGateway')
+        $query = static::with(['paymentGateway', 'merchantApp'])
             ->orderBy('created_at', 'desc');
+
+        if (isset($filters['app_id'])) {
+            $query->where('merchant_app_id', $filters['app_id']);
+        }
 
         if (isset($filters['gateway_type'])) {
             $query->whereHas('paymentGateway', function ($q) use ($filters) {
@@ -116,7 +133,6 @@ class PaymentWebhook extends BaseModel
         return $query->paginate($perPage);
     }
 
-
     /**
      * Get webhook with payment gateway relationship
      */
@@ -128,12 +144,16 @@ class PaymentWebhook extends BaseModel
     }
 
 
-     /**
+    /**
      * Get statistics by timeframe
      */
-    public static function getStatsByTimeframe(Carbon $startDate): array
+    public static function getStatsByTimeframe(Carbon $startDate, ?string $appId = null): array
     {
         $query = static::where('created_at', '>=', $startDate);
+        
+        if ($appId) {
+            $query->where('merchant_app_id', $appId);
+        }
         
         return [
             'total' => $query->count(),
@@ -143,7 +163,7 @@ class PaymentWebhook extends BaseModel
         ];
     }
 
-      /**
+    /**
      * Get webhooks that can be retried
      */
     public static function getRetryableWebhooks(array $webhookIds)

@@ -98,7 +98,6 @@ class WebhookProcessingService
 
             case 'disbursement.failed':
                 return $this->handleDisbursementFailed($webhook, $payload);
-
                 // Payment Intent specific events
             case 'payment_intent.succeeded':
             case 'payment_intent.payment_succeeded':
