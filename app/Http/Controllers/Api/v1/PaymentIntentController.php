@@ -26,21 +26,11 @@ class PaymentIntentController extends Controller
                 'status',
                 'client_reference_id',
                 'limit',
-                'starting_after'
             ]);
 
             $paymentIntents = $this->paymentIntentService->getForMerchant($merchant, $filters);
 
-            $items = $paymentIntents->items();
-
-            return response()->json([
-                'success' => true,
-                'data' => $items,
-                'has_more' => $paymentIntents->hasMorePages(),
-                'next_cursor' => $paymentIntents->hasMorePages()
-                    ? optional(end($items))->intent_id
-                    : null,
-            ]);
+            return response()->json($this->paginatedResponse($paymentIntents));
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

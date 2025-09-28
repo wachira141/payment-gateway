@@ -28,8 +28,8 @@ class ApiKeyResource extends JsonResource
                 $request->query('include_usage'),
                 $this->usage_count
             ),
-            'created_at' => $this->created_at->toISOString(),
-            'updated_at' => $this->updated_at->toISOString(),
+            'created_at' => $this->created_at?->toISOString(),
+            'updated_at' => $this->updated_at?->toISOString(),
         ];
     }
 

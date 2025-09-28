@@ -9,16 +9,13 @@ class Beneficiary extends BaseModel
     protected $fillable = [
         'beneficiary_id',
         'merchant_id',
-        'type',
+        'payout_method_id',
         'name',
-        'account_number',
-        'bank_code',
-        'bank_name',
-        'mobile_number',
         'currency',
         'country',
         'is_default',
         'is_verified',
+        'dynamic_fields',
         'metadata',
         'status',
         'verified_at',
@@ -27,12 +24,47 @@ class Beneficiary extends BaseModel
     ];
 
     protected $casts = [
+        'dynamic_fields' => 'array',
         'metadata' => 'array',
         'verification_details' => 'array',
         'is_default' => 'boolean',
         'is_verified' => 'boolean',
         'verified_at' => 'datetime'
     ];
+
+    /**
+     * Relationship to supported payout method
+     */
+    public function payoutMethod()
+    {
+        return $this->belongsTo(SupportedPayoutMethod::class, 'payout_method_id');
+    }
+
+    /**
+     * Get dynamic field value
+     */
+    public function getDynamicField(string $fieldName): mixed
+    {
+        return $this->dynamic_fields[$fieldName] ?? null;
+    }
+
+    /**
+     * Set dynamic field value
+     */
+    public function setDynamicField(string $fieldName, mixed $value): void
+    {
+        $dynamicFields = $this->dynamic_fields ?? [];
+        $dynamicFields[$fieldName] = $value;
+        $this->dynamic_fields = $dynamicFields;
+    }
+
+    /**
+     * Get all dynamic fields as array
+     */
+    public function getAllDynamicFields(): array
+    {
+        return $this->dynamic_fields ?? [];
+    }
 
     /**
      * Find beneficiary by ID
@@ -79,7 +111,7 @@ class Beneficiary extends BaseModel
     /**
      * Get beneficiaries for merchant
      */
-    public static function getForMerchant(string $merchantId, array $filters = []): array
+    public static function getForMerchant(string $merchantId, array $filters = [])
     {
         $query = static::where('merchant_id', $merchantId);
 
@@ -92,20 +124,15 @@ class Beneficiary extends BaseModel
         }
 
         if (!empty($filters['type'])) {
-            $query->where('type', $filters['type']);
+            $query->whereHas('payoutMethod', function ($q) use ($filters) {
+                $q->where('type', $filters['type']);
+            });
         }
 
         $query->orderBy('created_at', 'desc');
 
-        if (!empty($filters['limit'])) {
-            $query->limit($filters['limit']);
-        }
-
-        if (!empty($filters['offset'])) {
-            $query->offset($filters['offset']);
-        }
-
-        return $query->get()->toArray();
+        $perPage = $filters['limit'] ?? 15;
+        return $query->paginate($perPage);
     }
 
     /**

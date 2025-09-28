@@ -28,7 +28,7 @@ class ApiKeyController extends Controller
     {
         try {
             $apiKeys = $this->apiKeyService->getApiKeysForMerchant(
-                $request->user()->id
+                $request->user()->merchant_id
             );
 
             return response()->json([

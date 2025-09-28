@@ -24,18 +24,18 @@ class PaymentProcessorService
     protected $customerResolver;
 
     public function __construct(
-            ApplicationDataService $applicationDataService,
-            StripePaymentService $stripeService,
-            MpesaPaymentService $mpesaService,
-            TelebirrPaymentService $telebirrService,
-            CustomerResolutionService $customerResolver
-        ) {
-            $this->applicationDataService = $applicationDataService;
-            $this->stripeService = $stripeService;
-            $this->mpesaService = $mpesaService;
-            $this->telebirrService = $telebirrService;
-            $this->customerResolver = $customerResolver;
-        }
+        ApplicationDataService $applicationDataService,
+        StripePaymentService $stripeService,
+        MpesaPaymentService $mpesaService,
+        TelebirrPaymentService $telebirrService,
+        CustomerResolutionService $customerResolver
+    ) {
+        $this->applicationDataService = $applicationDataService;
+        $this->stripeService = $stripeService;
+        $this->mpesaService = $mpesaService;
+        $this->telebirrService = $telebirrService;
+        $this->customerResolver = $customerResolver;
+    }
     /**
      * Process a payment request
      */
@@ -54,7 +54,7 @@ class PaymentProcessorService
 
             $payable = $this->applicationDataService->getClassFromType($data['payable_type']);
 
-            if(!$payable) {
+            if (!$payable) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Invalid payable type',
@@ -62,8 +62,8 @@ class PaymentProcessorService
                 ], 500);
             }
 
-             // Resolve customer information from payment data
-             $customerId = $this->resolveCustomerForPayment($data);
+            // Resolve customer information from payment data
+            $customerId = $this->resolveCustomerForPayment($data);
 
             // Create transaction record
             $transaction = PaymentTransaction::createTransaction([
@@ -90,10 +90,24 @@ class PaymentProcessorService
                 $transaction->markAsFailed($result['error']);
             }
 
+            # TODO: Need to think it critically
+            // $webhookData = [
+            //     'payment_gateway_id' => $gateway->id,
+            //     'merchant_app_id' => $data['metadata']['app_id'],
+            //     'webhook_id' => Str::uuid(),
+            //     'event_type' => $data['event_type'] ?? null,
+            //     'gateway_event_id' => $result['checkout_request_id'] ?? null,
+            //     'payment_intent_id' => $data['payable_id'],
+            //     'payment_transaction_id' => $transaction->transaction_id,
+            //     'payload' => $result['gateway_response'],
+            //     'status' => 'pending',
+            // ];
+
+            // PaymentWebhook::createWebhook($webhookData);
+
             return array_merge($result, [
                 'transaction_id' => $transaction->transaction_id,
             ]);
-
         } catch (\Exception $e) {
             Log::error('Payment processing error: ' . $e->getMessage());
             return [
@@ -284,7 +298,7 @@ class PaymentProcessorService
     private function processStripeWebhook($webhook)
     {
         $payload = $webhook->payload;
-        
+
         // Handle different Stripe event types
         switch ($webhook->event_type) {
             case 'payment_intent.succeeded':
@@ -296,60 +310,60 @@ class PaymentProcessorService
         }
     }
 
- /**
+    /**
      * Process M-Pesa webhook
      */
     private function processMpesaWebhook($webhook)
     {
         $payload = $webhook->payload;
-        
+
         // Handle M-Pesa callback
         if (isset($payload['Body']['stkCallback'])) {
             $callback = $payload['Body']['stkCallback'];
             $checkoutRequestId = $callback['CheckoutRequestID'];
-            
+
             // Find transaction by checkout request ID
             $transaction = PaymentTransaction::where('gateway_response->checkout_request_id', $checkoutRequestId)->first();
-            
+
             if ($transaction) {
                 if ($callback['ResultCode'] == 0) {
                     $transaction->markAsCompleted($callback['MpesaReceiptNumber'] ?? null);
                 } else {
                     $transaction->markAsFailed($callback['ResultDesc']);
                 }
-                
+
                 // Sync with PaymentIntent if linked
                 app(PaymentIntentTransactionService::class)->syncIntentStatusFromTransaction($transaction);
             }
         }
-        
+
         return ['success' => true, 'transaction' => $transaction ?? null];
     }
 
-   /** 
+    /** 
      * Process Telebirr webhook
      */
     private function processTelebirrWebhook($webhook)
     {
         $payload = $webhook->payload;
-        
+
         // Handle Telebirr notification
         $orderId = $payload['orderId'] ?? null;
         if ($orderId) {
             $transaction = PaymentTransaction::where('transaction_id', $orderId)->first();
-            
+
             if ($transaction) {
                 if ($payload['status'] === 'SUCCESS') {
                     $transaction->markAsCompleted($payload['transactionId'] ?? null);
                 } else {
                     $transaction->markAsFailed($payload['status']);
                 }
-                
+
                 // Sync with PaymentIntent if linked
                 app(PaymentIntentTransactionService::class)->syncIntentStatusFromTransaction($transaction);
             }
         }
-        
+
         return ['success' => true];
     }
 
@@ -360,37 +374,37 @@ class PaymentProcessorService
     {
         $paymentIntentId = $payload['id'];
         $transaction = PaymentTransaction::where('gateway_payment_intent_id', $paymentIntentId)->first();
-        
+
         if ($transaction) {
             $transaction->markAsCompleted($paymentIntentId);
-            
+
             // Sync with PaymentIntent if linked
             app(PaymentIntentTransactionService::class)->syncIntentStatusFromTransaction($transaction);
         }
-        
+
         return ['success' => true];
     }
 
-      /**
+    /**
      * Handle Stripe payment failure
      */
     private function handleStripePaymentFailed($payload)
     {
         $paymentIntentId = $payload['id'];
         $transaction = PaymentTransaction::where('gateway_payment_intent_id', $paymentIntentId)->first();
-        
+
         if ($transaction) {
             $failureReason = $payload['last_payment_error']['message'] ?? 'Payment failed';
             $transaction->markAsFailed($failureReason);
-            
+
             // Sync with PaymentIntent if linked
             app(PaymentIntentTransactionService::class)->syncIntentStatusFromTransaction($transaction);
         }
-        
+
         return ['success' => true];
     }
 
-      /**
+    /**
      * Resolve customer for payment transaction
      */
     private function resolveCustomerForPayment(array $data): ?int
@@ -421,7 +435,7 @@ class PaymentProcessorService
                         'name' => $data['customer_name'] ?? null,
                     ]),
                 ];
-                
+
                 $customer = $this->customerResolver->resolveFromPaymentData($merchant, $paymentData);
                 return $customer ? $customer->id : null;
             }

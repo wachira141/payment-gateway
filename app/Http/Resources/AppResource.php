@@ -42,12 +42,43 @@ class AppResource extends JsonResource
                     return $this->apiKeys->max('last_used_at')?->toISOString();
                 }
             ),
+            'webhooks_count' => $this->whenCounted('webhooks'),
+            'active_webhooks_count' => $this->when(
+                $this->relationLoaded('webhooks'),
+                function () {
+                    return $this->webhooks->where('is_active', true)->count();
+                }
+            ),
+            'last_webhook_success_at' => $this->when(
+                $this->relationLoaded('webhooks'),
+                function () {
+                    return $this->webhooks->max('last_success_at')?->toISOString();
+                }
+            ),
             'secret_regenerated_at' => $this->secret_regenerated_at?->toISOString(),
             'created_at' => $this->created_at->toISOString(),
             'updated_at' => $this->updated_at->toISOString(),
             
             // Conditional relationships
             'api_keys' => ApiKeyResource::collection($this->whenLoaded('apiKeys')),
+            'webhooks' => $this->when(
+                $this->relationLoaded('webhooks'),
+                function () {
+                    return $this->webhooks->map(function ($webhook) {
+                        return [
+                            'id' => $webhook->id,
+                            'url' => $webhook->url,
+                            'events' => $webhook->events ?? [],
+                            'is_active' => $webhook->is_active,
+                            'description' => $webhook->description,
+                            'last_success_at' => $webhook->last_success_at?->toISOString(),
+                            'last_failure_at' => $webhook->last_failure_at?->toISOString(),
+                            'last_error' => $webhook->last_error,
+                            'created_at' => $webhook->created_at?->toISOString(),
+                        ];
+                    });
+                }
+            ),
             'statistics' => $this->when($request->query('include_stats'), function () {
                 return $this->getStatistics();
             }),

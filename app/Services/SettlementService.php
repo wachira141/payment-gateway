@@ -13,7 +13,7 @@ class SettlementService extends BaseService
     /**
      * Get settlements for a merchant with filters
      */
-    public function getSettlementsForMerchant(string $merchantId, array $filters = []): Collection
+    public function getSettlementsForMerchant(string $merchantId, array $filters = [])
     {
         $query = Settlement::where('merchant_id', $merchantId);
 
@@ -35,15 +35,8 @@ class SettlementService extends BaseService
 
         $query->orderBy('created_at', 'desc');
 
-        if (!empty($filters['limit'])) {
-            $query->limit($filters['limit']);
-        }
-
-        if (!empty($filters['offset'])) {
-            $query->offset($filters['offset']);
-        }
-
-        return $query->get();
+        $perPage = $filters['limit'] ?? 15;
+        return $query->paginate($perPage);
     }
 
     /**
@@ -52,7 +45,7 @@ class SettlementService extends BaseService
     public function getSettlementById(string $settlementId, string $merchantId): ?array
     {
         $settlement = Settlement::findByIdAndMerchant($settlementId, $merchantId);
-        return $settlement ? $settlement->toArray() : null;
+        return $settlement ? $settlement : null;
     }
 
     /**

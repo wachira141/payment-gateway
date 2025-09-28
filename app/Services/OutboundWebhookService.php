@@ -13,9 +13,16 @@ class OutboundWebhookService extends BaseService
     /**
      * Send webhook for specific event with optional correlation tracking
      */
-    public function sendWebhookForEvent(string $appId, string $eventType, array $payload, string $correlationId = null): void
+    public function sendWebhookForEvent(string $appId, string $eventType, array $payload, string | null $correlationId = null): void
     {
         $webhooks = AppWebhook::getActiveForEvent($appId, $eventType);
+
+        Log::info('Found webhooks for event', [
+            'app_id' => $appId,
+            'event_type' => $eventType,
+            'webhooks' => $webhooks,
+            'webhook_count' => count($webhooks),
+        ]);
         
         foreach ($webhooks as $webhook) {
             $this->dispatchWebhook($webhook, $eventType, $payload, $correlationId);
@@ -25,7 +32,7 @@ class OutboundWebhookService extends BaseService
     /**
      * Dispatch webhook delivery job with correlation tracking
      */
-    public function dispatchWebhook(AppWebhook $webhook, string $eventType, array $payload, string $correlationId = null): WebhookDelivery
+    public function dispatchWebhook(AppWebhook $webhook, string $eventType, array $payload, string | null $correlationId = null): WebhookDelivery
     {
         // Create delivery record
         $delivery = WebhookDelivery::create([
@@ -147,6 +154,11 @@ class OutboundWebhookService extends BaseService
      */
     public function formatPaymentIntentPayload($paymentIntent): array
     {
+
+        Log::info('formatPaymentIntentPayload', [
+            'data' => $paymentIntent,
+        ]);
+
         return [
             'id' => $paymentIntent->intent_id,
             'amount' => $paymentIntent->amount,

@@ -208,6 +208,14 @@ abstract class BaseModel extends Model
         return parent::serializeDate($date);
     }
 
+       /**
+     * Generate correlation ID for tracking data on end-to-end
+     */
+    public static function generateCorrelationId(string $endPoint): string
+    {
+        return $endPoint . Str::random(32);
+    }
+
 
     // protected static function convertCurrency(): CurrencyConverter
     // {

@@ -11,7 +11,7 @@ class BeneficiaryService extends BaseService
     /**
      * Get beneficiaries for a merchant with filters
      */
-    public function getBeneficiariesForMerchant(string $merchantId, array $filters = []): array
+    public function getBeneficiariesForMerchant(string $merchantId, array $filters = [])
     {
         return Beneficiary::getForMerchant($merchantId, $filters);
     }
@@ -27,6 +27,9 @@ class BeneficiaryService extends BaseService
     /**
      * Create a new beneficiary
      */
+    /**
+     * Create a new beneficiary
+     */
     public function createBeneficiary(string $merchantId, array $data): array
     {
         // Generate unique beneficiary ID
@@ -35,12 +38,24 @@ class BeneficiaryService extends BaseService
         $data['status'] = 'active'; // Default to pending verification
         $data['is_verified'] = false;
 
+        // Extract dynamic fields and payout method ID
+        $payoutMethodId = $data['payout_method_id'] ?? null;
+        $dynamicFields = $data['dynamic_fields'] ?? [];
+
+        if (!$payoutMethodId) {
+            throw new \Exception("Payout method ID is required");
+        }
+
+        // Set the payout method ID and dynamic fields
+        $data['payout_method_id'] = $payoutMethodId;
+        $data['dynamic_fields'] = $dynamicFields;
+
         // Validate beneficiary data using dynamic configuration
         $this->validateBeneficiaryDataDynamic($data);
 
         // If setting as default, remove default from other beneficiaries with same currency
         if (!empty($data['is_default']) && $data['is_default']) {
-            Beneficiary::setAsDefault($data['beneficiary_id'], $merchantId);
+            $this->unsetDefaultBeneficiaries($merchantId, $data['currency']);
         }
 
         $beneficiary = Beneficiary::create($data);
@@ -60,7 +75,7 @@ class BeneficiaryService extends BaseService
 
         // If setting as default, handle it properly
         if (!empty($data['is_default']) && $data['is_default']) {
-            Beneficiary::setAsDefault($beneficiaryId, $merchantId);
+            $this->unsetDefaultBeneficiaries($merchantId, $beneficiary['currency']);
         }
         // if status is being changed to inactive or suspended, ensure no pending payouts
         if (isset($data['status'])) {
@@ -273,37 +288,42 @@ class BeneficiaryService extends BaseService
     /**
      * Validate beneficiary data using dynamic configuration
      */
+    /**
+     * Validate beneficiary data using dynamic configuration
+     */
     private function validateBeneficiaryDataDynamic(array $data): void
     {
-        $methodType = $data['payout_method_id'] ?? null;
-        $country = $data['country'] ?? null;
-        $currency = $data['currency'] ?? null;
+        $payoutMethodId = $data['payout_method_id'] ?? null;
+        $dynamicFields = $data['dynamic_fields'] ?? [];
 
-        if (!$methodType || !$country || !$currency) {
-            throw new \Exception("Method type, country, and currency are required for beneficiary validation");
+        if (!$payoutMethodId) {
+            throw new \Exception("Payout method ID is required for beneficiary validation");
         }
 
-        // Get required fields for this method
-        $requiredFields = \App\Models\SupportedPayoutMethod::getRequiredFields($methodType, $country, $currency);
+        // Get the payout method configuration
+        $payoutMethod = \App\Models\SupportedPayoutMethod::find($payoutMethodId);
 
-        if (empty($requiredFields)) {
-            // Fallback to legacy validation if no dynamic config found
-            $this->validateBeneficiaryData($data);
-            return;
+        if (!$payoutMethod) {
+            throw new \Exception("Invalid payout method ID");
         }
+
+        // Get required fields configuration for this method
+        $configuration = $payoutMethod->configuration ?? [];
+        $requiredFields = $configuration['required_fields'] ?? [];
 
         // Validate each required field
         foreach ($requiredFields as $fieldName => $fieldConfig) {
             $isRequired = str_contains($fieldConfig['validation'] ?? '', 'required');
+            $fieldValue = $dynamicFields[$fieldName] ?? null;
 
-            if ($isRequired && empty($data[$fieldName])) {
+            if ($isRequired && empty($fieldValue)) {
                 $label = $fieldConfig['label'] ?? $fieldName;
-                throw new \Exception("Field '{$label}' is required for {$methodType} beneficiaries");
+                throw new \Exception("Field '{$label}' is required for this payout method");
             }
 
             // Perform type-specific validation
-            if (!empty($data[$fieldName])) {
-                $this->validateFieldByType($fieldName, $data[$fieldName], $fieldConfig, $data);
+            if (!empty($fieldValue)) {
+                $this->validateFieldByType($fieldName, $fieldValue, $fieldConfig, $data);
             }
         }
     }

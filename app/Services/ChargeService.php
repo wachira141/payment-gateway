@@ -24,7 +24,7 @@ class ChargeService extends BaseService
     /**
      * Get charges for a merchant with filters
      */
-    public function getChargesForMerchant(string $merchantId, array $filters = []): Collection
+    public function getChargesForMerchant(string $merchantId, array $filters = [])
     {
         $query = Charge::where('merchant_id', $merchantId);
 
@@ -46,15 +46,8 @@ class ChargeService extends BaseService
 
         $query->orderBy('created_at', 'desc');
 
-        if (!empty($filters['limit'])) {
-            $query->limit($filters['limit']);
-        }
-
-        if (!empty($filters['offset'])) {
-            $query->offset($filters['offset']);
-        }
-
-        return $query->get();
+        $perPage = $filters['limit'] ?? 15;
+        return $query->paginate($perPage);
     }
 
     /**

@@ -79,49 +79,51 @@ class WebhookProcessingService
             return $this->processMpesaWebhook($webhook, $payload);
         }
 
+        return ['status' => 'ignored'];
+
         // Handle other gateway webhooks
-        switch ($webhook->event_type) {
-            case 'payment.completed':
-                return $this->handlePaymentCompleted($webhook, $payload);
+        // switch ($webhook->event_type) {
+        //     case 'payment.completed':
+        //         return $this->handlePaymentCompleted($webhook, $payload);
 
-            case 'payment.failed':
-                return $this->handlePaymentFailed($webhook, $payload);
+        //     case 'payment.failed':
+        //         return $this->handlePaymentFailed($webhook, $payload);
 
-            case 'payment.pending':
-                return $this->handlePaymentPending($webhook, $payload);
+        //     case 'payment.pending':
+        //         return $this->handlePaymentPending($webhook, $payload);
 
-            case 'payment.cancelled':
-                return $this->handlePaymentCancelled($webhook, $payload);
+        //     case 'payment.cancelled':
+        //         return $this->handlePaymentCancelled($webhook, $payload);
 
-            case 'disbursement.completed':
-                return $this->handleDisbursementCompleted($webhook, $payload);
+        //     case 'disbursement.completed':
+        //         return $this->handleDisbursementCompleted($webhook, $payload);
 
-            case 'disbursement.failed':
-                return $this->handleDisbursementFailed($webhook, $payload);
-                // Payment Intent specific events
-            case 'payment_intent.succeeded':
-            case 'payment_intent.payment_succeeded':
-                return $this->handlePaymentIntentSucceeded($webhook, $payload);
+        //     case 'disbursement.failed':
+        //         return $this->handleDisbursementFailed($webhook, $payload);
+        //         // Payment Intent specific events
+        //     case 'payment_intent.succeeded':
+        //     case 'payment_intent.payment_succeeded':
+        //         return $this->handlePaymentIntentSucceeded($webhook, $payload);
 
-            case 'payment_intent.failed':
-            case 'payment_intent.payment_failed':
-                return $this->handlePaymentIntentFailed($webhook, $payload);
+        //     case 'payment_intent.failed':
+        //     case 'payment_intent.payment_failed':
+        //         return $this->handlePaymentIntentFailed($webhook, $payload);
 
-            case 'payment_intent.cancelled':
-                return $this->handlePaymentIntentCancelled($webhook, $payload);
-            case 'payment_intent.confirmed':
-                return $this->handlePaymentIntentConfirmed($webhook, $payload);
+        //     case 'payment_intent.cancelled':
+        //         return $this->handlePaymentIntentCancelled($webhook, $payload);
+        //     case 'payment_intent.confirmed':
+        //         return $this->handlePaymentIntentConfirmed($webhook, $payload);
 
-            case 'payment_intent.captured':
-                return $this->handlePaymentIntentCaptured($webhook, $payload);
-            default:
-                Log::warning('Unhandled webhook event type', [
-                    'event_type' => $webhook->event_type,
-                    'webhook_id' => $webhook->webhook_id
-                ]);
+        //     case 'payment_intent.captured':
+        //         return $this->handlePaymentIntentCaptured($webhook, $payload);
+        //     default:
+        //         Log::warning('Unhandled webhook event type', [
+        //             'event_type' => $webhook->event_type,
+        //             'webhook_id' => $webhook->webhook_id
+        //         ]);
 
-                return ['status' => 'ignored'];
-        }
+        //         return ['status' => 'ignored'];
+        // }
     }
 
 
@@ -217,7 +219,7 @@ class WebhookProcessingService
     }
 
     /**
-     * Process M-Pesa STK Push callback
+     * Process M-Pesa STK Push callback for Payment Intent
      */
     protected function processMpesaSTKCallback(PaymentWebhook $webhook, array $payload): array
     {
@@ -229,20 +231,74 @@ class WebhookProcessingService
         }
 
         $callbackData = $result['data'];
+        $checkoutRequestId = $callbackData['checkout_request_id'];
+        $resultCode = $callbackData['result_code'];
+        $paymentIntentId = $webhook->payment_intent_id ?? null;
 
-        // This would typically update a payment record, not disbursement
-        // For now, just log and return processed status
-        Log::info('STK Push callback processed', [
+        Log::info('Data on stk callback', [
+            'data' => $result
+        ]);
+
+        // Find PaymentIntent by checkout request ID or merchant reference
+        $paymentIntent = PaymentIntent::where('id', $paymentIntentId)->first();
+
+        if (!$paymentIntent) {
+            Log::warning('Payment intent not found for STK callback', [
+                'checkout_request_id' => $checkoutRequestId,
+                'webhook_id' => $webhook->webhook_id
+            ]);
+
+            return [
+                'success' => false,
+                'status' => 'ignored',
+                'entity_type' => 'payment_intent',
+                'action' => 'ignored',
+                'error' => 'Payment intent not found'
+            ];
+        }
+
+        if ($resultCode == 0) {
+            // Success
+            $paymentIntent->updateStatus('succeeded', [
+                'succeeded_at' => now(),
+                'gateway_transaction_id' => $callbackData['mpesa_receipt_number'] ?? $checkoutRequestId,
+            ]);
+
+            // Fire succeeded event only if not already fired
+            // if ($paymentIntent->canFireEvent('payment_intent.succeeded')) {
+            //     PaymentIntentSucceeded::dispatch($paymentIntent->fresh());
+            //     $paymentIntent->markEventAsFired('payment_intent.succeeded');
+            // }
+        } else {
+            // Failed
+            $errorMessage = $callbackData['result_desc'] ?? 'M-Pesa payment failed';
+            $paymentIntent->updateStatus('requires_action', [
+                'failure_reason' => $errorMessage,
+            ]);
+
+            // Fire failed event only if not already fired
+            // if ($paymentIntent->canFireEvent('payment_intent.failed')) {
+            //     PaymentIntentFailed::dispatch($paymentIntent->fresh());
+            //     $paymentIntent->markEventAsFired('payment_intent.failed');
+            // }
+        }
+
+        Log::info('STK Push callback processed for Payment Intent', [
             'webhook_id' => $webhook->webhook_id,
-            'checkout_request_id' => $callbackData['checkout_request_id'],
-            'result_code' => $callbackData['result_code']
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'checkout_request_id' => $checkoutRequestId,
+            'result_code' => $resultCode
         ]);
 
         return [
+            'success' => true,
             'status' => 'processed',
-            'action' => 'stk_callback_processed'
+            'entity_type' => 'payment_intent',
+            'entity_id' => $paymentIntent->intent_id,
+            'action' => $resultCode == 0 ? 'succeeded' : 'failed'
         ];
     }
+
 
     /**
      * Handle payment completed webhook
@@ -531,8 +587,6 @@ class WebhookProcessingService
         }
     }
 
-
-
     /**
      * Get webhook by ID with related data
      */
@@ -666,8 +720,11 @@ class WebhookProcessingService
             'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
         ]);
 
-        // Fire event for webhooks
-        PaymentIntentSucceeded::dispatch($paymentIntent->fresh());
+        // Fire event for webhooks only if not already fired
+        if ($paymentIntent->canFireEvent('payment_intent.succeeded')) {
+            PaymentIntentSucceeded::dispatch($paymentIntent->fresh());
+            $paymentIntent->markEventAsFired('payment_intent.succeeded');
+        }
 
         Log::info('Payment intent succeeded via webhook', [
             'payment_intent_id' => $paymentIntent->intent_id,
@@ -696,13 +753,16 @@ class WebhookProcessingService
         $errorMessage = $payload['error_message'] ?? $payload['failure_reason'] ?? 'Payment failed';
 
         // Update payment intent status
-        $paymentIntent->updateStatus('payment_failed', [
+        $paymentIntent->updateStatus('requires_action', [
             'failure_reason' => $errorMessage,
             'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
         ]);
 
-        // Fire event for webhooks
-        PaymentIntentFailed::dispatch($paymentIntent->fresh());
+        // Fire event for webhooks only if not already fired
+        if ($paymentIntent->canFireEvent('payment_intent.failed')) {
+            PaymentIntentFailed::dispatch($paymentIntent->fresh());
+            $paymentIntent->markEventAsFired('payment_intent.failed');
+        }
 
         Log::info('Payment intent failed via webhook', [
             'payment_intent_id' => $paymentIntent->intent_id,
@@ -736,8 +796,11 @@ class WebhookProcessingService
             'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
         ]);
 
-        // Fire event for webhooks
-        PaymentIntentCancelled::dispatch($paymentIntent->fresh());
+        // Fire event for webhooks only if not already fired
+        if ($paymentIntent->canFireEvent('payment_intent.cancelled')) {
+            PaymentIntentCancelled::dispatch($paymentIntent->fresh());
+            $paymentIntent->markEventAsFired('payment_intent.cancelled');
+        }
 
         Log::info('Payment intent cancelled via webhook', [
             'payment_intent_id' => $paymentIntent->intent_id,
@@ -759,19 +822,22 @@ class WebhookProcessingService
     protected function handlePaymentIntentConfirmed(PaymentWebhook $webhook, array $payload): array
     {
         $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
-        
+
         if (!$paymentIntent) {
             return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
         }
 
         // Update payment intent status
-        $paymentIntent->updateStatus('confirmed', [
+        $paymentIntent->updateStatus('processing', [
             'confirmed_at' => now(),
             'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
         ]);
 
-        // Fire event for webhooks
-        PaymentIntentConfirmed::dispatch($paymentIntent->fresh());
+        // Fire event for webhooks only if not already fired
+        if ($paymentIntent->canFireEvent('payment_intent.confirmed')) {
+            PaymentIntentConfirmed::dispatch($paymentIntent->fresh());
+            $paymentIntent->markEventAsFired('payment_intent.confirmed');
+        }
 
         Log::info('Payment intent confirmed via webhook', [
             'payment_intent_id' => $paymentIntent->intent_id,
@@ -792,7 +858,7 @@ class WebhookProcessingService
     protected function handlePaymentIntentCaptured(PaymentWebhook $webhook, array $payload): array
     {
         $paymentIntent = $this->findPaymentIntentFromWebhook($webhook, $payload);
-        
+
         if (!$paymentIntent) {
             return ['status' => 'ignored', 'reason' => 'payment_intent_not_found'];
         }
@@ -800,14 +866,18 @@ class WebhookProcessingService
         $capturedAmount = $payload['amount_captured'] ?? $payload['amount'] ?? $paymentIntent->amount;
 
         // Update payment intent status
-        $paymentIntent->updateStatus('captured', [
+        $paymentIntent->updateStatus('succeeded', [
             'captured_at' => now(),
-            'amount_captured' => $capturedAmount,
+            'amount_received' => $capturedAmount,
             'gateway_transaction_id' => $payload['transaction_id'] ?? $payload['gateway_transaction_id'] ?? null,
         ]);
 
-        // Fire event for webhooks
-        PaymentIntentCaptured::dispatch($paymentIntent->fresh());
+        // Fire event for webhooks only if not already fired
+        if ($paymentIntent->canFireEvent('payment_intent.captured')) {
+            PaymentIntentCaptured::dispatch($paymentIntent->fresh());
+            $paymentIntent->markEventAsFired('payment_intent.captured');
+        }
+
 
         Log::info('Payment intent captured via webhook', [
             'payment_intent_id' => $paymentIntent->intent_id,

@@ -25,8 +25,7 @@ class RefundController extends Controller
             $filters = [
                 'status' => $request->query('status'),
                 'currency' => $request->query('currency'),
-                'limit' => $request->query('limit', 10),
-                'offset' => $request->query('offset', 0),
+                'limit' => $request->query('limit', 15),
                 'start_date' => $request->query('start_date'),
                 'end_date' => $request->query('end_date'),
             ];
@@ -36,10 +35,7 @@ class RefundController extends Controller
                 $filters
             );
 
-            return response()->json([
-                'success' => true,
-                'data' => $refunds
-            ]);
+            return response()->json($this->paginatedResponse($refunds));
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

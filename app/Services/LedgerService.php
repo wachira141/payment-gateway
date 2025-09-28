@@ -368,10 +368,7 @@ class LedgerService
         return $balances;
     }
 
-    /**
-     * Get account balances for all currencies
-     */
-    /**
+   /**
      * Get account balances for all currencies with currency summary
      */
     public function getAllAccountBalances($merchantId)
@@ -384,18 +381,49 @@ class LedgerService
 
         $allBalances = [];
         $currencySummary = [];
-
+        
         foreach ($currencies as $currency) {
             $currencyBalances = $this->getAccountBalancesByCurrency($merchantId, $currency);
             $allBalances = array_merge($allBalances, $currencyBalances);
-
-            // Calculate currency summary
-            $totalBalance = array_sum(array_column($currencyBalances, 'balance'));
+            
+            // Categorize balances
+            $merchantBalances = [];
+            $feeBalances = [];
+            $revenueBalances = [];
+            
+            foreach ($currencyBalances as $balance) {
+                switch ($balance['account_type']) {
+                    case 'merchant_balance_available':
+                    case 'merchant_balance_pending':
+                        $merchantBalances[] = $balance;
+                        break;
+                    case 'gateway_processing_fees':
+                    case 'platform_application_fees':
+                        $feeBalances[] = $balance;
+                        break;
+                    case 'payment_processing_revenue':
+                        $revenueBalances[] = $balance;
+                        break;
+                }
+            }
+            
+            // Calculate balances by category
+            $merchantNetBalance = array_sum(array_column($merchantBalances, 'balance'));
+            $totalFees = array_sum(array_column($feeBalances, 'balance'));
+            $totalRevenue = array_sum(array_column($revenueBalances, 'balance'));
+            $totalAccountingBalance = array_sum(array_column($currencyBalances, 'balance'));
+            
             $currencySummary[$currency] = [
                 'currency' => $currency,
-                'total_balance' => $totalBalance,
+                'merchant_net_balance' => $merchantNetBalance,
+                'total_fees' => $totalFees,
+                'total_revenue' => $totalRevenue,
+                'total_accounting_balance' => $totalAccountingBalance,
                 'account_count' => count($currencyBalances),
-                'accounts' => $currencyBalances
+                'accounts' => $currencyBalances,
+                'merchant_accounts' => $merchantBalances,
+                'fee_accounts' => $feeBalances,
+                'revenue_accounts' => $revenueBalances
             ];
         }
 
@@ -406,6 +434,7 @@ class LedgerService
             'available_currencies' => $currencies
         ];
     }
+
 
     /**
      * Get assets accounts summary for financial reports
@@ -469,5 +498,62 @@ class LedgerService
         }
 
         return $revenue;
+    }
+
+     /**
+     * Get merchant balances summary (only merchant-facing balances)
+     */
+    public function getMerchantBalancesSummary($merchantId)
+    {
+        // Get all currencies for this merchant
+        $currencies = LedgerEntry::where('merchant_id', $merchantId)
+            ->distinct('currency')
+            ->pluck('currency')
+            ->toArray();
+
+        $merchantBalances = [];
+        $currencySummary = [];
+        
+        foreach ($currencies as $currency) {
+            // Only include merchant-facing balances
+            $merchantAccountTypes = [
+                'merchant_balance_available' => 'assets',
+                'merchant_balance_pending' => 'assets',
+            ];
+
+            $balances = [];
+            foreach ($merchantAccountTypes as $accountName => $accountType) {
+                $balance = $this->getAccountBalance($merchantId, $accountType, $accountName, $currency);
+                $balances[] = [
+                    'account_type' => $accountName,
+                    'currency' => $currency,
+                    'balance' => $balance,
+                    'last_updated' => now()->toISOString(),
+                ];
+            }
+
+            $merchantBalances = array_merge($merchantBalances, $balances);
+            
+            // Calculate merchant net balance (available + pending)
+            $availableBalance = $balances[0]['balance'] ?? 0;
+            $pendingBalance = $balances[1]['balance'] ?? 0;
+            $merchantNetBalance = $availableBalance + $pendingBalance;
+            
+            $currencySummary[$currency] = [
+                'currency' => $currency,
+                'merchant_net_balance' => $merchantNetBalance,
+                'available_balance' => $availableBalance,
+                'pending_balance' => $pendingBalance,
+                'account_count' => count($balances),
+                'accounts' => $balances
+            ];
+        }
+
+        return [
+            'balances' => $merchantBalances,
+            'currency_summary' => $currencySummary,
+            'total_currencies' => count($currencies),
+            'available_currencies' => $currencies
+        ];
     }
 }

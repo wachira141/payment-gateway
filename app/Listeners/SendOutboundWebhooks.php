@@ -8,6 +8,7 @@ use App\Events\PaymentIntentSucceeded;
 use App\Events\PaymentIntentFailed;
 use App\Events\PaymentIntentCancelled;
 use App\Events\PaymentIntentCaptured;
+use App\Models\BaseModel;
 use App\Services\OutboundWebhookService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Queue\InteractsWithQueue;
@@ -29,6 +30,10 @@ class SendOutboundWebhooks implements ShouldQueue
      */
     public function handlePaymentIntentCreated(PaymentIntentCreated $event): void
     {
+        Log::info('Handling PaymentIntentCreated event', [
+            'payment_intent_id' => $event,
+            'merchant_id' => $event->paymentIntent->merchant_id,
+        ]);
         $this->sendWebhook($event->paymentIntent, 'payment_intent.created');
     }
 
@@ -77,22 +82,27 @@ class SendOutboundWebhooks implements ShouldQueue
      */
     protected function sendWebhook($paymentIntent, string $eventType): void
     {
+
         try {
-            $appId = $paymentIntent->merchantApp->app_id;
+            $appId = $paymentIntent->merchant_app_id;
+
             $payload = [
                 'event_type' => $eventType,
                 'data' => $this->webhookService->formatPaymentIntentPayload($paymentIntent),
                 'timestamp' => now()->toISOString(),
             ];
 
-            $this->webhookService->sendWebhookForEvent($appId, $eventType, $payload);
+            $endPoint = 'whc_';
+
+            $correlationId = BaseModel::generateCorrelationId($endPoint);
+
+            $this->webhookService->sendWebhookForEvent($appId, $eventType, $payload, $correlationId);
 
             Log::info('Outbound webhook event processed', [
                 'event_type' => $eventType,
                 'payment_intent_id' => $paymentIntent->intent_id,
                 'app_id' => $appId,
             ]);
-
         } catch (\Exception $e) {
             Log::error('Failed to send outbound webhook', [
                 'event_type' => $eventType,

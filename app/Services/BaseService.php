@@ -15,11 +15,11 @@ abstract class BaseService
     protected function validateData(array $data, array $rules, array $messages = [])
     {
         $validator = Validator::make($data, $rules, $messages);
-        
+
         if ($validator->fails()) {
             throw new ValidationException($validator);
         }
-        
+
         return $validator->validated();
     }
 
@@ -32,7 +32,7 @@ abstract class BaseService
             'exception' => $e,
             'trace' => $e->getTraceAsString()
         ]);
-        
+
         throw $e;
     }
 
@@ -59,7 +59,7 @@ abstract class BaseService
                 }
             }
         }
-        
+
         return $query;
     }
 
@@ -71,7 +71,7 @@ abstract class BaseService
         if (empty($fields)) {
             return $model->toArray();
         }
-        
+
         return $model->only($fields);
     }
 
@@ -81,7 +81,7 @@ abstract class BaseService
     protected function getPaginatedResults($query, int $perPage = 15, array $filters = [])
     {
         $query = $this->applyFilters($query, $filters);
-        
+
         return $query->paginate($perPage);
     }
 
@@ -92,7 +92,7 @@ abstract class BaseService
     {
         $timestamp = now()->format('YmdHis');
         $random = strtoupper(substr(md5(uniqid()), 0, 6));
-        
+
         return $prefix . $timestamp . $random;
     }
 
@@ -114,7 +114,7 @@ abstract class BaseService
         if (!$userId) {
             $userId = auth()->id();
         }
-        
+
         // Add your permission logic here
         // This is a placeholder - implement based on your auth system
         return true;
@@ -131,4 +131,17 @@ abstract class BaseService
             'service' => get_class($this)
         ]));
     }
+
+    /**
+     * Log system activity
+     */
+    // public function logActivity(string $merchantId, string $type, string $message, string $status = 'success'): void
+    // {
+    //     SystemActivity::create([
+    //         'merchant_id' => $merchantId,
+    //         'type' => $type,
+    //         'message' => $message,
+    //         'status' => $status
+    //     ]);
+    // }
 }

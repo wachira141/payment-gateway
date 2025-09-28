@@ -90,7 +90,7 @@ class Payout extends BaseModel
     /**
      * Get payouts for merchant
      */
-    public static function getForMerchant(string $merchantId, array $filters = []): array
+    public static function getForMerchant(string $merchantId, array $filters = [])
     {
         $query = static::where('merchant_id', $merchantId)
             ->with('beneficiary:beneficiary_id,name,type,currency');
@@ -121,14 +121,16 @@ class Payout extends BaseModel
             $query->offset($filters['offset']);
         }
 
-        return $query->get()->map(function ($payout) {
+        $query->get()->map(function ($payout) {
             $payoutArray = $payout->toArray();
             if ($payout->beneficiary) {
                 $payoutArray['beneficiary_name'] = $payout->beneficiary->name;
                 $payoutArray['beneficiary_type'] = $payout->beneficiary->type;
             }
             return $payoutArray;
-        })->toArray();
+        });
+        $perPage = $filters['limit'] ?? 15;
+        return $query->paginate($perPage);
     }
 
     /**

@@ -8,10 +8,13 @@ class GatewayHealthCheck extends BaseModel
 {
     protected $fillable = [
         'check_id',
+        'gateway_id',
         'gateway_name',
         'gateway_endpoint',
         'check_type',
         'status',
+        'is_healthy',
+        'response_time',
         'response_time_ms',
         'response_data',
         'error_message',
@@ -24,11 +27,14 @@ class GatewayHealthCheck extends BaseModel
     ];
 
     protected $casts = [
+        'is_healthy' => 'boolean',
+        'response_time' => 'float',
         'health_metrics' => 'array',
         'checked_at' => 'datetime',
         'last_success_at' => 'datetime',
         'last_failure_at' => 'datetime',
-        'success_rate' => 'decimal:2'
+        'success_rate' => 'decimal:2',
+        'consecutive_failures' => 'integer'
     ];
 
     /**

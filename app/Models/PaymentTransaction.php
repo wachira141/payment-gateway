@@ -58,6 +58,14 @@ class PaymentTransaction extends BaseModel
     }
 
     /**
+     * Get webhooks associated with this payment transaction
+     */
+    public function webhooks()
+    {
+        return $this->hasMany(PaymentWebhook::class);
+    }
+
+    /**
      * Get the associated user
      */
     public function merchant()
@@ -420,7 +428,7 @@ class PaymentTransaction extends BaseModel
 
 
 
-     /**
+    /**
      * Get unprocessed commission transactions
      */
     public static function getUnprocessedCommissions($limit = 100)
@@ -463,8 +471,7 @@ class PaymentTransaction extends BaseModel
             gateway_code,
             payment_method_type
         ')
-        ->groupBy(['gateway_code', 'payment_method_type'])
-        ->get();
+            ->groupBy(['gateway_code', 'payment_method_type'])
+            ->get();
     }
-
 }

@@ -13,34 +13,38 @@ class ApiKeyService extends BaseService
     /**
      * Get API keys for a merchant
      */
-    public function getApiKeysForMerchant(string $merchantId): Collection
+    public function getApiKeysForMerchant(string $merchantId): array
     {
-        return ApiKey::where('merchant_id', $merchantId)
-            ->where('is_revoked', false)
+        $apiKeys = ApiKey::with('app')
+            ->whereHas('app', function ($query) use ($merchantId) {
+                $query->where('merchant_id', $merchantId);
+            })
+            ->where('is_active', true)
             ->orderBy('created_at', 'desc')
             ->get()
             ->map(function ($apiKey) {
-                // Hide the actual key value for security
                 $data = $apiKey->toArray();
-                $data['key'] = $this->maskApiKey($data['key']);
+                $data['key'] = $this->maskApiKey($data['key_id']);
+                $data['app_name'] = $apiKey->app->name ?? null;
                 return $data;
             });
-    }
 
+        return $this->formatApiKeyResponse($apiKeys);
+    }
     /**
      * Get an API key by ID for a merchant
      */
     public function getApiKeyById(string $apiKeyId, string $merchantId): ?array
     {
         $apiKey = ApiKey::findByIdAndMerchant($apiKeyId, $merchantId);
-        
+
         if (!$apiKey) {
             return null;
         }
 
         $data = $apiKey->toArray();
         $data['key'] = $this->maskApiKey($data['key']);
-        
+
         return $data;
     }
 
@@ -57,7 +61,7 @@ class ApiKeyService extends BaseService
         // Validate scopes
         $allowedScopes = ['read', 'write', 'admin'];
         $scopes = array_intersect($data['scopes'], $allowedScopes);
-        
+
         if (empty($scopes)) {
             throw new \Exception('At least one valid scope is required');
         }
@@ -83,7 +87,7 @@ class ApiKeyService extends BaseService
         // Return with actual key value (only time it's shown in full)
         $result = $apiKey->toArray();
         $result['key'] = $keyValue;
-        
+
         // Also update the stored record to use hash
         ApiKey::updateById($apiKey['id'], ['key' => $keyHash]);
 
@@ -96,7 +100,7 @@ class ApiKeyService extends BaseService
     public function regenerateApiKey(string $apiKeyId, string $merchantId): array
     {
         $apiKey = ApiKey::findByIdAndMerchant($apiKeyId, $merchantId);
-        
+
         if (!$apiKey) {
             throw new \Exception('API key not found');
         }
@@ -130,7 +134,7 @@ class ApiKeyService extends BaseService
     public function revokeApiKey(string $apiKeyId, string $merchantId): bool
     {
         $apiKey = ApiKey::findByIdAndMerchant($apiKeyId, $merchantId);
-        
+
         if (!$apiKey) {
             throw new \Exception('API key not found');
         }
@@ -152,7 +156,7 @@ class ApiKeyService extends BaseService
         }
 
         $apiKey = ApiKey::findByKey($keyValue);
-        
+
         if (!$apiKey) {
             return null;
         }
@@ -226,9 +230,9 @@ class ApiKeyService extends BaseService
             'total_usage' => $apiKeys->sum('usage_count'),
             'most_used_key' => $apiKeys->sortByDesc('usage_count')->first(),
             'recently_used_keys' => $apiKeys->whereNotNull('last_used_at')
-                                          ->sortByDesc('last_used_at')
-                                          ->take(5)
-                                          ->values(),
+                ->sortByDesc('last_used_at')
+                ->take(5)
+                ->values(),
         ];
     }
 
@@ -267,7 +271,7 @@ class ApiKeyService extends BaseService
     public function bulkRevokeApiKeys(array $apiKeyIds, string $merchantId): int
     {
         $count = 0;
-        
+
         foreach ($apiKeyIds as $apiKeyId) {
             try {
                 $this->revokeApiKey($apiKeyId, $merchantId);
@@ -288,8 +292,8 @@ class ApiKeyService extends BaseService
     {
         // This would typically be called by a scheduled job
         $expiredKeys = ApiKey::where('expires_at', '<', now())
-                            ->where('is_revoked', false)
-                            ->get();
+            ->where('is_revoked', false)
+            ->get();
 
         $count = 0;
         foreach ($expiredKeys as $key) {
@@ -305,7 +309,7 @@ class ApiKeyService extends BaseService
     }
 
 
-     /**
+    /**
      * Business logic: transform API keys for response while delegating DB interactions to the model.
      */
     public function getAppApiKeysForMerchant(string $appId, string $merchantId): Collection
@@ -326,5 +330,31 @@ class ApiKeyService extends BaseService
                 'created_at' => $key->created_at,
             ];
         });
+    }
+
+    public function formatApiKeyResponse(Collection $apiKeys): array
+    {
+        return $apiKeys->map(function ($apiKey) {
+            return [
+                'id' => $apiKey['id'],
+                'key_id' => $apiKey['key_id'],
+                'name' => $apiKey['name'],
+                'scopes' => $apiKey['scopes'],
+                'is_active' => $apiKey['is_active'],
+                'last_used_at' => $apiKey['last_used_at'],
+                'expires_at' => $apiKey['expires_at'],
+                'rate_limits' => $apiKey['rate_limits'],
+                'usage_count' => $apiKey['usage_count'],
+                'created_at' => $apiKey['created_at'],
+                'key' => $apiKey['key'], // This is the masked key
+                'app_id' => $apiKey['app']['id'],
+                'napp_ame' => $apiKey['app']['name'],
+                'app_description' => $apiKey['app']['description'],
+                'app_is_live' => $apiKey['app']['is_live'],
+                'app_is_active' => $apiKey['app']['is_active'],
+                'website_url' => $apiKey['app']['website_url'],
+                'logo_url' => $apiKey['app']['logo_url'],
+            ];
+        })->toArray();
     }
 }

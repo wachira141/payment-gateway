@@ -28,19 +28,15 @@ class BeneficiaryController extends Controller
                 'status' => $request->query('status'),
                 'currency' => $request->query('currency'),
                 'type' => $request->query('type'),
-                'limit' => $request->query('limit', 10),
-                'offset' => $request->query('offset', 0),
+                'limit' => $request->query('limit', 15),
             ];
 
             $beneficiaries = $this->beneficiaryService->getBeneficiariesForMerchant(
                 $request->user()->merchant_id,
                 $filters
             );
-
-            return response()->json([
-                'success' => true,
-                'data' => $beneficiaries
-            ]);
+            
+            return response()->json($this->paginatedResponse($beneficiaries));
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

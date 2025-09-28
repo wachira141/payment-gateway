@@ -27,7 +27,7 @@ class PaymentIntentTransactionService
     /**
      * Link a payment transaction to a payment intent
      */
-     /**
+    /**
      * Link a payment transaction to a payment intent
      */
     public function linkTransactionToIntent(PaymentIntent $paymentIntent, PaymentTransaction $transaction): void
@@ -58,7 +58,7 @@ class PaymentIntentTransactionService
     public function syncIntentStatusFromTransaction(PaymentTransaction $transaction): void
     {
         $paymentIntent = $this->findIntentByTransaction($transaction);
-        
+
         if (!$paymentIntent) {
             Log::warning('Payment intent not found for transaction', [
                 'transaction_id' => $transaction->transaction_id
@@ -116,12 +116,14 @@ class PaymentIntentTransactionService
 
             $paymentIntent->updateStatus($newStatus, $additionalData);
 
-            // Fire appropriate events
-            if ($newStatus === 'succeeded') {
-                PaymentIntentSucceeded::dispatch($paymentIntent->fresh());
-            } elseif ($newStatus === 'requires_action') {
-                PaymentIntentFailed::dispatch($paymentIntent->fresh());
-            }
+            // Fire succeeded event only if not already fired
+            // if ($newStatus === 'succeeded' && $paymentIntent->canFireEvent('payment_intent.succeeded')) {
+            //     PaymentIntentSucceeded::dispatch($paymentIntent->fresh());
+            //     $paymentIntent->markEventAsFired('payment_intent.succeeded');
+            // } elseif ($newStatus === 'requires_action' && $paymentIntent->canFireEvent('payment_intent.failed')) {
+            //     PaymentIntentFailed::dispatch($paymentIntent->fresh());
+            //     $paymentIntent->markEventAsFired('payment_intent.failed');
+            // }
 
             Log::info('Payment intent status synchronized', [
                 'intent_id' => $paymentIntent->intent_id,
@@ -157,7 +159,7 @@ class PaymentIntentTransactionService
         if ($transaction) {
             // Update transaction first
             $transaction->updateWithGatewayResponse($gatewayData, $status);
-            
+
             // Then sync payment intent
             $this->syncIntentStatusFromTransaction($transaction);
         }

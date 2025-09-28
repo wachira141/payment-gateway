@@ -24,23 +24,23 @@ class PaymentIntentService
 {
     protected $paymentProcessor;
     protected $intentTransactionService;
-    protected $gatewayMapper; 
+    protected $gatewayMapper;
     protected $chargeService;
     protected $ledgerService;
-    
-    
+
+
     public function __construct(
         PaymentProcessorService $paymentProcessor,
         PaymentIntentTransactionService $intentTransactionService,
         PaymentMethodGatewayMapper $gatewayMapper,
         ChargeService $chargeService,
         LedgerService $ledgerService,
-        ) {
-            $this->paymentProcessor = $paymentProcessor;
-            $this->intentTransactionService = $intentTransactionService;
-            $this->gatewayMapper = $gatewayMapper;
-            $this->chargeService = $chargeService;
-            $this->ledgerService = $ledgerService;
+    ) {
+        $this->paymentProcessor = $paymentProcessor;
+        $this->intentTransactionService = $intentTransactionService;
+        $this->gatewayMapper = $gatewayMapper;
+        $this->chargeService = $chargeService;
+        $this->ledgerService = $ledgerService;
     }
 
     public function create(Merchant $merchant, array $data): PaymentIntent
@@ -140,8 +140,6 @@ class PaymentIntentService
 
             DB::beginTransaction();
 
-            // First fire confirmed event
-            PaymentIntentConfirmed::dispatch($paymentIntent);
 
             //payment processing logic
             $isSuccessful = $this->processPayment($paymentIntent, $paymentMethodData);
@@ -151,9 +149,6 @@ class PaymentIntentService
                     'confirmed_at' => now(),
                 ]);
 
-                // Fire succeeded event
-                PaymentIntentSucceeded::dispatch($paymentIntent->fresh());
-
                 // Store payment method for customer if successful and customer exists
                 if ($paymentIntent->customer_id && !empty($paymentMethodData)) {
                     CustomerPaymentMethod::createFromPaymentData(
@@ -162,9 +157,7 @@ class PaymentIntentService
                     );
                 }
             } else {
-                $paymentIntent->updateStatus('requires_action', );
-                // Fire failed event for requires_action status
-                PaymentIntentFailed::dispatch($paymentIntent->fresh());
+                $paymentIntent->updateStatus('requires_action');
             }
 
             DB::commit();
@@ -200,8 +193,11 @@ class PaymentIntentService
                 'amount_received' => $paymentIntent->amount,
             ]);
 
-            // Fire captured event
-            PaymentIntentCaptured::dispatch($paymentIntent->fresh());
+            // Fire captured event only if not already fired
+            if ($paymentIntent->canFireEvent('payment_intent.captured')) {
+                PaymentIntentCaptured::dispatch($paymentIntent->fresh());
+                $paymentIntent->markEventAsFired('payment_intent.captured');
+            }
 
             DB::commit();
 
@@ -222,7 +218,7 @@ class PaymentIntentService
         }
     }
 
-    public function cancel(PaymentIntent $paymentIntent, string $reason = null): PaymentIntent
+    public function cancel(PaymentIntent $paymentIntent, string | null $reason = null): PaymentIntent
     {
         try {
             if (!$paymentIntent->canBeCancelled()) {
@@ -235,8 +231,11 @@ class PaymentIntentService
                 'cancellation_reason' => $reason,
             ]);
 
-            // Fire cancelled event
-            PaymentIntentCancelled::dispatch($paymentIntent->fresh());
+            // Fire cancelled event only if not already fired
+            if ($paymentIntent->canFireEvent('payment_intent.cancelled')) {
+                PaymentIntentCancelled::dispatch($paymentIntent->fresh());
+                $paymentIntent->markEventAsFired('payment_intent.cancelled');
+            }
 
             DB::commit();
 
@@ -290,7 +289,7 @@ class PaymentIntentService
                 ]);
                 return false;
             }
-            
+
             // Prepare payment data for PaymentProcessorService
             $paymentData = [
                 'gateway_code' => $gateway->code,
@@ -303,6 +302,7 @@ class PaymentIntentService
                 'metadata' => array_merge($paymentIntent->metadata ?? [], [
                     'payment_intent_id' => $paymentIntent->intent_id,
                     'payment_method_type' => $paymentMethodType,
+                    // 'app_id' => $paymentIntent->merchant_app_id,
                 ]),
                 'phone_number' => $paymentMethodData['mobile_money']['phone_number'] ?? null,
             ];
@@ -314,7 +314,7 @@ class PaymentIntentService
 
             // Process the payment
             $result = $this->paymentProcessor->processPayment($paymentData);
-            
+
             if ($result['success']) {
                 // Store gateway data in the payment intent
                 $paymentIntent->update([
@@ -329,7 +329,7 @@ class PaymentIntentService
                     ],
                     'gateway_transaction_id' => $result['transaction_id'],
                     'gateway_payment_intent_id' => $result['payment_intent_id'] ?? null,
-                    'amount_received' => $paymentIntent->amount, 
+                    'amount_received' => $paymentIntent->amount,
                 ]);
 
                 Log::info('Payment processing initiated successfully', [
@@ -338,6 +338,11 @@ class PaymentIntentService
                     'transaction_id' => $result['transaction_id'],
                 ]);
 
+                // Fire confirmed event only if not already fired
+                if ($paymentIntent->canFireEvent('payment_intent.confirmed')) {
+                    PaymentIntentConfirmed::dispatch($paymentIntent);
+                    $paymentIntent->markEventAsFired('payment_intent.confirmed');
+                }
                 return true;
             } else {
                 Log::error('Payment processing failed', [
@@ -345,7 +350,11 @@ class PaymentIntentService
                     'gateway' => $gateway->code,
                     'error' => $result['error'] ?? 'Unknown error',
                 ]);
-
+                // Fire failed event only if not already fired
+                if ($paymentIntent->canFireEvent('payment_intent.failed')) {
+                    PaymentIntentFailed::dispatch($paymentIntent->fresh());
+                    $paymentIntent->markEventAsFired('payment_intent.failed');
+                }
                 return false;
             }
         } catch (Exception $e) {

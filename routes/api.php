@@ -2,7 +2,6 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\v1\PaymentIntentController;
-use App\Http\Controllers\Api\v1\MerchantController;
 use App\Http\Controllers\Api\v1\BalanceController;
 use App\Http\Controllers\Api\v1\MerchantAuthController;
 use App\Http\Controllers\Api\v1\AppController;
@@ -20,6 +19,7 @@ use App\Http\Controllers\Api\v1\PaymentController;
 use App\Http\Controllers\Api\v1\LedgerController;
 use App\Http\Controllers\Api\v1\WebhookFlowController;
 use App\Http\Controllers\Api\v1\FXController;
+use App\Http\Controllers\Api\v1\MerchantWebhookController;
 use App\Http\Controllers\Api\v1\SupportedBankController;
 use App\Http\Controllers\Api\v1\SupportedPayoutMethodController;
 
@@ -29,6 +29,7 @@ Route::prefix('v1')->group(function () {
         Route::post('login', [MerchantAuthController::class, 'login']);
         Route::post('register', [MerchantAuthController::class, 'register']);
     });
+    Route::get('health', [\App\Http\Controllers\Api\v1\HealthController::class, 'check']);
 
     // application data
     Route::get('application-data', [ApplicationDataController::class, 'index'])->name('index');
@@ -87,10 +88,11 @@ Route::prefix('v1')->group(function () {
 
         // Webhook logs (incoming)
         Route::prefix('webhooks')->group(function () {
+            Route::get('/', [MerchantWebhookController::class, 'index']);
             Route::get('logs', [WebhookController::class, 'getLogs']);
             Route::post('retry/{webhookId}', [WebhookController::class, 'retryWebhook']);
             Route::get('flow-stats', [WebhookFlowController::class, 'getFlowStats']);
-            Route::get('stats', [WebhookController::class, 'getWebhookStats']);
+            Route::get('stats', [WebhookController::class, 'getStats']);
             Route::post('bulk-retry', [WebhookController::class, 'bulkRetryWebhooks']);
             Route::get('event-types', [WebhookController::class, 'getAvailableEventTypes']);
             Route::post('replay/{webhookId}', [WebhookController::class, 'replayWebhook']);
@@ -160,6 +162,7 @@ Route::prefix('v1')->group(function () {
         // Ledger and Financial Reports
         Route::prefix('ledger')->group(function () {
             Route::get('reports', [LedgerController::class, 'getFinancialReports']);
+            Route::get('merchant-balances', [LedgerController::class, 'getMerchantBalances']);
             Route::get('balances', [LedgerController::class, 'getAccountBalances']);
             Route::get('validate', [LedgerController::class, 'validateLedger']);
             Route::get('reconciliation', [LedgerController::class, 'getReconciliation']);
@@ -218,18 +221,27 @@ Route::prefix('v1')->group(function () {
             Route::get('options', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'getGatewayOptions']);
         });
 
+         // Analytics
+         Route::prefix('analytics')->group(function () {
+            Route::get('dashboard', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getDashboardMetrics']);
+            Route::get('developer', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getDeveloperMetrics']);
+            Route::get('activity', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getSystemActivity']);
+            Route::get('chart', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getChartData']);
+            Route::get('system-health', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getSystemHealth']);
+        });
+
 
         // API routes (for third-party integrations - protected by API key)
-        Route::middleware(['api.key', 'tenant.context'])->group(function () {
-            // Payment intents
-            Route::prefix('payment-intents')->group(function () {
-                // Route::apiResource('/', PaymentIntentController::class)->only(['index', 'store', 'show']);
-                // Route::post('/{id}/capture', [PaymentIntentController::class, 'capture']);
-                // Route::post('/{id}/cancel', [PaymentIntentController::class, 'cancel']);
-                // Route::post('/{id}/confirm', [PaymentIntentController::class, 'confirm']);
-                // Route::get('/analytics', [PaymentIntentController::class, 'analytics']);
-            });
-        });
+        // Route::middleware(['api.key', 'tenant.context'])->group(function () {
+        //     // Payment intents
+        //     Route::prefix('payment-intents')->group(function () {
+        //         Route::apiResource('/', PaymentIntentController::class)->only(['index', 'store', 'show']);
+        //         Route::post('/{id}/capture', [PaymentIntentController::class, 'capture']);
+        //         Route::post('/{id}/cancel', [PaymentIntentController::class, 'cancel']);
+        //         Route::post('/{id}/confirm', [PaymentIntentController::class, 'confirm']);
+        //         Route::get('/analytics', [PaymentIntentController::class, 'analytics']);
+        //     });
+        // });
 
         // Balances
         Route::get('balances', [BalanceController::class, 'index']);

@@ -33,6 +33,10 @@ class AppService extends BaseService
     {
         $query = App::forMerchant($merchantId)->where('id', $appId);
         
+        // Default relationships to load
+        $defaultWith = ['apiKeys:id,app_id,name,is_active,last_used_at', 'webhooks'];
+        $with = empty($with) ? $defaultWith : array_merge($defaultWith, $with);
+        
         if (!empty($with)) {
             $query->with($with);
         }
@@ -48,7 +52,31 @@ class AppService extends BaseService
         $this->logActivity('Creating app', ['merchant_id' => $merchantId, 'name' => $data['name']]);
         
         try {
-            return App::createForMerchant($merchantId, $data);
+            // Extract webhook data from app data
+            $webhookUrl = $data['webhook_url'] ?? null;
+            $webhookEvents = $data['webhook_events'] ?? null;
+            
+            // Remove webhook fields from app data as they will be stored in app_webhooks table
+            $appData = array_diff_key($data, array_flip(['webhook_url', 'webhook_events']));
+            
+            // Create the core app
+            $app = App::createForMerchant($merchantId, $appData);
+            
+            // Create webhook record if webhook data provided
+            if ($webhookUrl && !empty($webhookUrl)) {
+                $app->webhooks()->create([
+                    'url' => $webhookUrl,
+                    'events' => $webhookEvents ?: [],
+                    'is_active' => true,
+                    'secret' => 'whsec_' . \Illuminate\Support\Str::random(40),
+                    'timeout_seconds' => 30,
+                    'retry_attempts' => 3,
+                    'description' => 'Default webhook endpoint',
+                ]);
+            }
+            
+            // Return app with webhooks loaded
+            return $app->load('webhooks');
         } catch (\Exception $e) {
             $this->handleException($e, 'App creation');
             throw $e;

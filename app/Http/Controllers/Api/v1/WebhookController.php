@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\v1;
 use App\Http\Controllers\Controller;
 use App\Models\PaymentWebhook;
 use App\Models\PaymentGateway;
+use App\Models\PaymentIntent;
 use App\Services\PaymentProcessorService;
 use App\Services\CommissionCalculationService;
 use App\Services\WebhookProcessingService;
@@ -102,8 +103,11 @@ class WebhookController extends Controller
             }
 
             // Create webhook record
-            $appId = $this->extractAppIdFromWebhook($request, $gatewayType);
-            Log::info("Extracted app ID from webhook: " . ($appId ?: 'null'));
+            $paymentIntent = $this->extractPaymentIntentFromWebhook($request, $gatewayType);
+
+            $appId = $paymentIntent ? $paymentIntent->merchant_app_id : null;
+
+            Log::info("Extracted app ID from webhook: " . ($paymentIntent-> gateway_data['transaction_id'] ?: 'null'));
 
             $webhook = PaymentWebhook::create([
                 'payment_gateway_id' => $gateway->id,
@@ -111,6 +115,8 @@ class WebhookController extends Controller
                 'webhook_id' => Str::uuid(),
                 'event_type' => $eventType ?: $this->determineEventType($request, $gatewayType),
                 'gateway_event_id' => $this->extractEventId($request, $gatewayType),
+                'payment_intent_id' => $paymentIntent ? $paymentIntent->id : null,
+                'payment_transaction_id' =>$paymentIntent ? $paymentIntent-> gateway_data['transaction_id'] ?? null : null,
                 'payload' => $request->all(),
                 'status' => 'pending',
             ]);
@@ -138,7 +144,7 @@ class WebhookController extends Controller
             $result = $this->paymentProcessor->processWebhook($webhook, $gatewayType);
 
             // Trigger outbound event handling
-            $this->webhookEventService->processIncomingWebhook($webhook, $result);
+            $this->webhookEventService->processIncomingWebhook($webhook, $gateway->type, $result);
 
             if ($result['success']) {
                 $webhook->markProcessed();
@@ -192,7 +198,7 @@ class WebhookController extends Controller
                 if ($request->has('Body.stkCallback')) {
                     $resultCode = $request->input('Body.stkCallback.ResultCode');
                     $rawEvent = $resultCode == 0 ? 'stk_success' : 'stk_failure';
-                    return $gatewayMappings[$rawEvent] ?? 'payment.' . ($resultCode == 0 ? 'completed' : 'failed');
+                    return $gatewayMappings[$rawEvent] ?? 'payment_intent.' . ($resultCode == 0 ? 'succeeded' : 'failed');
                 }
                 return 'unknown';
             case 'stripe':
@@ -346,7 +352,15 @@ class WebhookController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $webhooks,
+            'data' => $webhooks->items(),
+            'pagination' => [
+                'current_page' => $webhooks->currentPage(),
+                'last_page' => $webhooks->lastPage(),
+                'per_page' => $webhooks->perPage(),
+                'total' => $webhooks->total(),
+                'from' => $webhooks->firstItem(),
+                'to' => $webhooks->lastItem(),
+            ],
         ]);
     }
 
@@ -488,19 +502,20 @@ class WebhookController extends Controller
     /**
      * Extract app ID from webhook payload or related payment intent
      */
-    private function extractAppIdFromWebhook(Request $request, string $gatewayType): ?string
+    private function extractPaymentIntentFromWebhook(Request $request, string $gatewayType): ?PaymentIntent
     {
         try {
             // Try to get app_id from payment intent reference
             $eventId = $this->extractEventId($request, $gatewayType);
             Log::info("Extracted event ID from webhook: " . ($eventId ?: 'null'));
+
             if ($eventId) {
                 // For Stripe webhooks, lookup payment intent by stripe_payment_intent_id
                 if ($gatewayType === 'stripe' && $request->has('data.object.id')) {
                     $stripePaymentIntentId = $request->input('data.object.id');
                     $paymentIntent = \App\Models\PaymentIntent::where('gateway_payment_intent_id', $stripePaymentIntentId)->first();
                     if ($paymentIntent) {
-                        return $paymentIntent->merchant_app_id;
+                        return $paymentIntent;
                     }
                 }
 
@@ -511,7 +526,7 @@ class WebhookController extends Controller
                         ->first();
                     Log::info(json_encode($paymentIntent));
                     if ($paymentIntent) {
-                        return $paymentIntent->merchant_app_id;
+                        return $paymentIntent;
                     }
                 }
             }

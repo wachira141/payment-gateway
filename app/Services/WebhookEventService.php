@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\BaseModel;
 use App\Models\PaymentWebhook;
 use App\Models\WebhookDelivery;
 use App\Models\PaymentIntent;
@@ -12,7 +13,7 @@ use Illuminate\Support\Facades\Log;
  * Centralized webhook event coordination service
  * Manages the flow from incoming webhooks to outbound webhook deliveries
  */
-class WebhookEventService extends BaseService
+class WebhookEventService
 {
     protected OutboundWebhookService $outboundWebhookService;
     
@@ -26,7 +27,7 @@ class WebhookEventService extends BaseService
      */
     public static function getEventTypeMapping(): array
     {
-        return config('apps.webhook_event_mappings', []);
+        return config('app.gateway_event_mappings', []);
     }
 
     /**
@@ -34,7 +35,7 @@ class WebhookEventService extends BaseService
      */
     public static function getMerchantEventTypes(): array
     {
-        return config('apps.webhook_events', []);
+        return config('app.webhook_events', []);
     }
 
     /**
@@ -46,21 +47,16 @@ class WebhookEventService extends BaseService
         return $gateway ? ($mappings[$gateway] ?? []) : $mappings;
     }
     
-    /**
-     * Generate correlation ID for tracking webhooks end-to-end
-     */
-    public function generateCorrelationId(): string
-    {
-        return 'whc_' . Str::random(32);
-    }
     
     /**
      * Process incoming webhook and coordinate outbound webhook delivery
      */
-    public function processIncomingWebhook(PaymentWebhook $incomingWebhook, array $processResult): void
+    public function processIncomingWebhook(PaymentWebhook $incomingWebhook, string $gatewayType, array $processResult): void
     {
         // Generate correlation ID for tracking
-        $correlationId = $this->generateCorrelationId();
+        $endPoint = 'whc_' ;
+        $correlationId = BaseModel::generateCorrelationId($endPoint);
+
 
         // Update incoming webhook with correlation ID
         $incomingWebhook->update(['correlation_id' => $correlationId]);
@@ -70,7 +66,7 @@ class WebhookEventService extends BaseService
 
         // Check if this should trigger outbound webhooks
         if ($standardizedResult['status'] === 'processed' && isset($standardizedResult['payment_intent_id'])) {
-            $this->triggerOutboundWebhooks($incomingWebhook, $standardizedResult, $correlationId);
+            $this->triggerOutboundWebhooks($incomingWebhook, $standardizedResult, $gatewayType, $correlationId);
         }
 
         Log::info('Webhook event processed with correlation tracking', [
@@ -134,7 +130,7 @@ class WebhookEventService extends BaseService
     /**
      * Trigger outbound webhooks based on incoming webhook processing
      */
-    protected function triggerOutboundWebhooks(PaymentWebhook $incomingWebhook, array $processResult, string $correlationId): void
+    protected function triggerOutboundWebhooks(PaymentWebhook $incomingWebhook, array $processResult, string $gatewayType, string $correlationId): void
     {
         $paymentIntent = PaymentIntent::where('intent_id', $processResult['payment_intent_id'])->first();
         
@@ -145,12 +141,19 @@ class WebhookEventService extends BaseService
             ]);
             return;
         }
-        
-        $appId = $paymentIntent->merchantApp->app_id;
+        Log::info('Preparing to trigger outbound webhooks', [
+            'correlation_id' => $correlationId,
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'app_id' => $paymentIntent->merchantApp->merchant_app_id,
+            'gateway_type' => $gatewayType,
+            'event_type' => $incomingWebhook->event_type,
+        ]);
+        $appId = $paymentIntent->merchantApp->id;
         
         // Map gateway event to merchant event type
         $gatewayEventType = $incomingWebhook->event_type;
-        $merchantEventType = $this->mapToMerchantEventType($gatewayEventType, $processResult['action'] ?? '');
+
+        $merchantEventType = $this->mapToMerchantEventType($gatewayEventType, $gatewayType, $processResult['action'] ?? '');
         
         if (!$merchantEventType) {
             Log::info('No merchant event mapping for gateway event', [
@@ -177,23 +180,26 @@ class WebhookEventService extends BaseService
     /**
      * Map gateway event type to merchant-facing event type
      */
-    protected function mapToMerchantEventType(string $gatewayEventType, string $action = ''): ?string
+    protected function mapToMerchantEventType(string $gatewayEventType, string $gatewayType, string $action = ''): ?string
     {
         $mapping = self::getEventTypeMapping();
 
         // Direct mapping
-        if (isset($mapping[$gatewayEventType])) {
-            return $mapping[$gatewayEventType];
+        if (isset($mapping[$gatewayType][$gatewayEventType])) {
+            return $mapping[$gatewayType][$gatewayEventType];
         }
+
+        Log::info('No direct mapping for gateway event type', ['gateway_event' => $mapping]);
 
         // Action-based mapping for generic events
         if ($gatewayEventType === 'payment_intent' && $action) {
             $eventKey = "payment_intent.{$action}";
-            return $mapping[$eventKey] ?? null;
+            return $mapping[$gatewayType][$eventKey] ?? null;
         }
 
         return null;
     }
+
     
     /**
      * Get webhook delivery statistics with correlation tracking
@@ -269,7 +275,8 @@ class WebhookEventService extends BaseService
         }
         
         // Generate new correlation ID for replay
-        $newCorrelationId = $this->generateCorrelationId();
+        $endPoint = 'whc_' ;
+        $newCorrelationId = BaseModel::generateCorrelationId($endPoint);
         
         // Create new webhook record for replay
         $replayWebhook = PaymentWebhook::create([

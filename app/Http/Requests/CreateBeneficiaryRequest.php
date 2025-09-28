@@ -3,8 +3,6 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
-use App\Models\SupportedPayoutMethod;
-use App\Models\SupportedBank;
 
 class CreateBeneficiaryRequest extends FormRequest
 {
@@ -15,74 +13,30 @@ class CreateBeneficiaryRequest extends FormRequest
 
     public function rules(): array
     {
-        $rules = [
+        return [
             'name' => 'required|string|max:255',
-            'payout_method_id' => 'required|string',
             'currency' => 'required|string|size:3',
             'country' => 'required|string|size:2',
-            'is_default' => 'boolean',
-            'metadata' => 'array',
+            'payout_method_id' => 'required|string|exists:supported_payout_methods,id',
+            'dynamic_fields' => 'required|array',
+            'is_default' => 'sometimes|boolean',
+            'metadata' => 'sometimes|array',
         ];
-
-        // Get dynamic validation rules based on method type
-        $methodType = $this->input('payout_method_id');
-        $country = $this->input('country');
-        $currency = $this->input('currency');
-
-        if ($methodType && $country && $currency) {
-            // Validate method type exists for country/currency
-            $rules['payout_method_id'] = [
-                'required',
-                'string',
-                function ($attribute, $value, $fail) use ($country, $currency) {
-                    $method = SupportedPayoutMethod::getMethodByType($value, $country, $currency);
-                    if (!$method) {
-                        $fail('The selected payout method is not supported for the specified country and currency.');
-                    }
-                }
-            ];
-            
-            // Add dynamic field validation rules
-            $dynamicRules = SupportedPayoutMethod::getValidationRules($methodType, $country, $currency);
-
-            // Add custom validation for specific field types
-            foreach ($dynamicRules as $field => $rule) {
-                if ($field === 'bank_code' && str_contains($rule, 'required')) {
-                    $rules[$field] = [
-                        'required',
-                        'string',
-                        'max:20',
-                        function ($attribute, $value, $fail) use ($country) {
-                            if (!SupportedBank::validateBankForCountry($value, $country)) {
-                                $fail('The selected bank is not supported for the specified country.');
-                            }
-                        }
-                    ];
-                } else {
-                    $rules[$field] = $rule;
-                }
-            }
-        }
-
-
-
-        return $rules;
     }
 
     public function messages(): array
     {
         return [
             'name.required' => 'Beneficiary name is required.',
-            'payout_method_id.required' => 'Payout method is required.',
             'currency.required' => 'Currency is required.',
-            'currency.size' => 'Currency must be a 3-letter code.',
+            'currency.size' => 'Currency must be a 3-character code.',
             'country.required' => 'Country is required.',
-            'country.size' => 'Country must be a 2-letter code.',
-            'account_number.required' => 'Account number is required.',
-            'bank_code.required' => 'Bank selection is required.',
-            'mobile_number.required' => 'Mobile number is required.',
-            'email.required' => 'Email address is required.',
-            'account_id.required' => 'Account ID is required.',
+            'country.size' => 'Country must be a 2-character code.',
+            'payout_method_id.required' => 'Payout method is required.',
+            'payout_method_id.exists' => 'Selected payout method is not supported.',
+            'dynamic_fields.required' => 'Beneficiary details are required.',
+            'dynamic_fields.array' => 'Beneficiary details must be an array.',
+            'is_default.boolean' => 'Default flag must be true or false.',
         ];
     }
 }

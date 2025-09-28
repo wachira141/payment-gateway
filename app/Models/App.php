@@ -100,6 +100,14 @@ class App extends BaseModel
         return $this->hasMany(PaymentIntent::class, 'app_id', 'id');
     }
 
+    /**
+     * Get webhooks for this app
+     */
+    public function webhooks()
+    {
+        return $this->hasMany(AppWebhook::class, 'app_id', 'id');
+    }
+
     // ==================== SCOPES ====================
 
     /**
@@ -359,18 +367,22 @@ class App extends BaseModel
     }
 
     /**
-     * Get webhook statistics (placeholder for future implementation)
+     * Get webhook statistics
      */
     private function getWebhookStatistics(): array
     {
-        // This would integrate with actual webhook delivery tracking
+        $webhooks = $this->webhooks();
+        $totalWebhooks = $webhooks->count();
+        $activeWebhooks = $webhooks->where('is_active', true)->count();
+
         return [
-            'total_sent' => 0,
-            'successful' => 0,
-            'failed' => 0,
-            'success_rate' => 0.0,
+            'total_webhooks' => $totalWebhooks,
+            'active_webhooks' => $activeWebhooks,
+            'last_success' => $webhooks->max('last_success_at'),
+            'last_failure' => $webhooks->max('last_failure_at'),
         ];
     }
+
 
     /**
      * Get transaction statistics (placeholder for future implementation)

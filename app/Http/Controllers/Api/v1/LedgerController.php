@@ -128,6 +128,68 @@ class LedgerController extends Controller
         }
     }
 
+
+    /**
+     * Get merchant balances (only merchant-facing balances)
+     */
+    public function getMerchantBalances(Request $request): JsonResponse
+    {
+        try {
+            $merchantId = $request->user()->merchant_id;
+            $currency = $request->input('currency');
+
+            if ($currency && $currency !== 'all') {
+                // Single currency merchant balances
+                $result = $this->ledgerService->getMerchantBalancesSummary($merchantId);
+                $currencyData = $result['currency_summary'][$currency] ?? null;
+                
+                if (!$currencyData) {
+                    return response()->json([
+                        'success' => true,
+                        'data' => [],
+                        'metadata' => [
+                            'currency_filter' => $currency,
+                            'is_single_currency' => true,
+                            'merchant_net_balance' => 0
+                        ]
+                    ]);
+                }
+                
+                return response()->json([
+                    'success' => true,
+                    'data' => $currencyData['accounts'],
+                    'metadata' => [
+                        'currency_filter' => $currency,
+                        'is_single_currency' => true,
+                        'merchant_net_balance' => $currencyData['merchant_net_balance'],
+                        'available_balance' => $currencyData['available_balance'],
+                        'pending_balance' => $currencyData['pending_balance']
+                    ]
+                ]);
+            } else {
+                // Multi-currency merchant balances
+                $result = $this->ledgerService->getMerchantBalancesSummary($merchantId);
+                
+                return response()->json([
+                    'success' => true,
+                    'data' => $result['balances'],
+                    'metadata' => [
+                        'currency_summary' => $result['currency_summary'],
+                        'total_currencies' => $result['total_currencies'],
+                        'available_currencies' => $result['available_currencies'],
+                        'is_multi_currency' => true,
+                        'generated_at' => now()->toISOString()
+                    ]
+                ]);
+            }
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     /**
      * Validate ledger integrity
      */

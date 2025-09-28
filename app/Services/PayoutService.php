@@ -9,6 +9,7 @@ use App\Services\GatewayPricingService;
 use App\Services\PayoutMethodService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class PayoutService extends BaseService
 {
@@ -35,7 +36,7 @@ class PayoutService extends BaseService
      /**
      * Get payouts for a merchant with filters including beneficiary data
      */
-    public function getPayoutsForMerchant(string $merchantId, array $filters = []): array
+    public function getPayoutsForMerchant(string $merchantId, array $filters = [])
     {
         return Payout::getForMerchant($merchantId, $filters);
     }
@@ -46,7 +47,7 @@ class PayoutService extends BaseService
     public function getPayoutById(string $payoutId, string $merchantId): ?array
     {
         $payout = Payout::findByIdAndMerchant($payoutId, $merchantId);
-        return $payout ? $payout->toArray() : null;
+        return $payout ? $payout : null;
     }
 
     /**

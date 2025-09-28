@@ -6,6 +6,7 @@ use App\Models\BaseModel;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Log;
 
 
 class PaymentIntent extends BaseModel
@@ -42,7 +43,7 @@ class PaymentIntent extends BaseModel
         'succeeded_at',
         'captured_at',
         'cancellation_reason',
-
+        'events_fired',
         'gateway_transaction_id',
         'gateway_payment_intent_id',
         'gateway_data',
@@ -59,6 +60,7 @@ class PaymentIntent extends BaseModel
         'gateway_data' => 'array',
         'charges' => 'array',
         'last_payment_error' => 'array',
+        'events_fired' => 'array',
         'processing_at' => 'datetime',
         'confirmed_at' => 'datetime',
         'cancelled_at' => 'datetime',
@@ -81,7 +83,19 @@ class PaymentIntent extends BaseModel
             if (empty($paymentIntent->status)) {
                 $paymentIntent->status = 'requires_payment_method';
             }
+            // Initialize events_fired array
+            if (empty($paymentIntent->events_fired)) {
+                $paymentIntent->events_fired = [];
+            }
         });
+    }
+
+    /**
+     * Get webhooks associated with this payment intent
+     */
+    public function webhooks()
+    {
+        return $this->hasMany(PaymentWebhook::class);
     }
 
     /**
@@ -110,7 +124,7 @@ class PaymentIntent extends BaseModel
      */
     public function merchantApp()
     {
-        return $this->belongsTo(App::class);
+        return $this->belongsTo(App::class, 'merchant_app_id', 'id');
     }
 
     /**
@@ -266,10 +280,11 @@ class PaymentIntent extends BaseModel
     }
 
     /**
-     * Update payment intent status
+     * Update payment intent status with event deduplication
      */
     public function updateStatus($status, array $additionalData = [])
     {
+        $oldStatus = $this->status;
         $updateData = array_merge(['status' => $status], $additionalData);
 
         if ($status === 'succeeded') {
@@ -280,7 +295,16 @@ class PaymentIntent extends BaseModel
             $updateData['processing_at'] = now();
         }
 
-        return $this->updateRecord($updateData);
+        $result = $this->updateRecord($updateData);
+
+        Log::info('Payment intent status updated', [
+            'intent_id' => $this->intent_id,
+            'old_status' => $oldStatus,
+            'new_status' => $status,
+            'status_changed' => $oldStatus !== $status,
+        ]);
+
+        return $result;
     }
 
     /**
@@ -410,5 +434,35 @@ class PaymentIntent extends BaseModel
             'by_status' => $query->groupBy('status')->selectRaw('status, count(*) as count, sum(amount) as total_amount')->get()->keyBy('status'),
             'by_currency' => $query->groupBy('currency')->selectRaw('currency, count(*) as count, sum(amount) as total_amount')->get()->keyBy('currency'),
         ];
+    }
+
+
+    /**
+     * Check if an event has been fired for this payment intent
+     */
+    public function hasEventBeenFired(string $eventType): bool
+    {
+        $eventsFired = $this->events_fired ?? [];
+        return in_array($eventType, $eventsFired);
+    }
+
+    /**
+     * Mark an event as fired for this payment intent
+     */
+    public function markEventAsFired(string $eventType): void
+    {
+        $eventsFired = $this->events_fired ?? [];
+        if (!in_array($eventType, $eventsFired)) {
+            $eventsFired[] = $eventType;
+            $this->update(['events_fired' => $eventsFired]);
+        }
+    }
+
+    /**
+     * Check if an event can be fired (not already fired)
+     */
+    public function canFireEvent(string $eventType): bool
+    {
+        return !$this->hasEventBeenFired($eventType);
     }
 }

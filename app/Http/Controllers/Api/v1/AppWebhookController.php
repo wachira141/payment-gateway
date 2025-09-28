@@ -254,6 +254,13 @@ class AppWebhookController extends Controller
                 ]
             );
 
+            Log::info('Sending test webhook', [
+                'webhook_id' => $webhookId,
+                'url' => $webhook->url,
+                'headers' => $headers,
+                'payload' => $testPayload,
+            ]);
+
             $response = Http::timeout($webhook->timeout_seconds)
                 ->withHeaders($headers)
                 ->post($webhook->url, $testPayload);

@@ -1,0 +1,17 @@
+UPDATE payment_intents SET status='requires_payment_method', events_fired=NULL;
+
+
+DELETE FROM ledger_entries;
+
+DELETE FROM webhook_deliveries;
+
+DELETE FROM payouts;
+
+DELETE FROM charges;
+
+DELETE FROM charges;
+
+DELETE FROM ledger_entries;
+DELETE FROM merchant_balances;
+
+SELECT event_type, http_status_code, status, id, correlation_id, source_webhook_id FROM webhook_deliveries;

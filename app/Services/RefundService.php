@@ -24,7 +24,7 @@ class RefundService extends BaseService
     /**
      * Get refunds for a merchant with filters
      */
-    public function getRefundsForMerchant(string $merchantId, array $filters = []): Collection
+    public function getRefundsForMerchant(string $merchantId, array $filters = [])
     {
         $query = Refund::where('merchant_id', $merchantId);
 
@@ -50,11 +50,8 @@ class RefundService extends BaseService
             $query->limit($filters['limit']);
         }
 
-        if (!empty($filters['offset'])) {
-            $query->offset($filters['offset']);
-        }
-
-        return $query->get();
+        $perPage = $filters['limit'] ?? 15;
+        return $query->paginate($perPage);
     }
 
     /**
