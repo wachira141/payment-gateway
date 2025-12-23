@@ -7,6 +7,7 @@ use App\Services\LedgerService;
 use App\Models\Refund;
 use App\Models\Charge;
 use App\Models\PaymentIntent;
+use App\Helpers\CurrencyHelper;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
@@ -88,7 +89,7 @@ class RefundService extends BaseService
             if ($paymentIntent['status'] !== 'succeeded') {
                 throw new \Exception('Cannot refund unsuccessful payment intent');
             }
-            
+
             // Find the associated charge
             $charge = Charge::findByPaymentIntent($data['payment_intent_id']);
             if (!$charge) {
@@ -134,7 +135,7 @@ class RefundService extends BaseService
     public function processRefund(string $refundId): array
     {
         $refund = Refund::findById($refundId);
-        
+
         if (!$refund) {
             throw new \Exception('Refund not found');
         }
@@ -145,7 +146,7 @@ class RefundService extends BaseService
 
         // Simulate refund processing
         $success = $this->processRefundWithProvider($refund);
-        
+
         if ($success) {
             $refund = Refund::updateById($refundId, [
                 'status' => 'succeeded',
@@ -183,7 +184,7 @@ class RefundService extends BaseService
     {
         // Simulate refund processing logic
         // In real implementation, this would integrate with payment processors
-        
+
         // Simulate 2% failure rate for demonstration
         return rand(1, 100) > 2;
     }
@@ -204,14 +205,22 @@ class RefundService extends BaseService
         }
 
         $refunds = $query->get();
+        $succeededRefunds = $refunds->where('status', 'succeeded');
+
+        // Get currency for formatting (use first refund's currency or default)
+        $currency = $succeededRefunds->first()['currency'] ?? 'USD';
+        $totalAmount = $succeededRefunds->sum('amount');
+        $avgAmount = $succeededRefunds->avg('amount') ?? 0;
 
         return [
             'total_refunds' => $refunds->count(),
-            'successful_refunds' => $refunds->where('status', 'succeeded')->count(),
+            'successful_refunds' => $succeededRefunds->count(),
             'failed_refunds' => $refunds->where('status', 'failed')->count(),
             'pending_refunds' => $refunds->where('status', 'pending')->count(),
-            'total_refunded_amount' => $refunds->where('status', 'succeeded')->sum('amount'),
-            'average_refund_amount' => $refunds->where('status', 'succeeded')->avg('amount'),
+            'total_refunded_amount' => $totalAmount,
+            'total_refunded_formatted' => CurrencyHelper::format($totalAmount, $currency),
+            'average_refund_amount' => $avgAmount,
+            'average_refund_formatted' => CurrencyHelper::format((int) $avgAmount, $currency),
         ];
     }
 
@@ -221,7 +230,7 @@ class RefundService extends BaseService
     public function cancelRefund(string $refundId, string $merchantId): array
     {
         $refund = Refund::findByIdAndMerchant($refundId, $merchantId);
-        
+
         if (!$refund) {
             throw new \Exception('Refund not found');
         }

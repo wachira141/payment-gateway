@@ -8,15 +8,11 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('merchant_apps', function (Blueprint $table) {
-            // Add soft deletes
-            $table->softDeletes();
-            
+        Schema::table('merchant_apps', function (Blueprint $table) {            
             // Add additional indexes for performance
             $table->index(['merchant_id', 'is_active']);
             $table->index(['is_live', 'is_active']);
             $table->index(['created_at']);
-            $table->index(['deleted_at']);
         });
     }
 

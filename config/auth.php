@@ -43,7 +43,7 @@ return [
         
         'api' => [
             'driver' => 'passport',
-            'provider' => 'users',
+            'provider' => 'merchant_users',
         ],
 
         'admin' => [
@@ -52,7 +52,7 @@ return [
         ],
         
         'merchant' => [
-            'driver' => 'sanctum',
+            'driver' => 'passport',
             'provider' => 'merchant_users',
         ],
     ],

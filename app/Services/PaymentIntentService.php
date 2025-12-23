@@ -15,6 +15,7 @@ use App\Events\PaymentIntentCaptured;
 use App\Services\PaymentProcessorService;
 use App\Services\PaymentIntentTransactionService;
 use App\Services\PaymentMethodGatewayMapper;
+use App\Helpers\CurrencyHelper;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -43,6 +44,10 @@ class PaymentIntentService
         $this->ledgerService = $ledgerService;
     }
 
+    /**
+     * Create a new payment intent
+     * Note: Amount should be provided in MINOR units (cents/paise)
+     */
     public function create(Merchant $merchant, array $data): PaymentIntent
     {
         try {
@@ -66,16 +71,23 @@ class PaymentIntentService
                 }
                 $merchantAppId = $firstApp->id;
             }
+            $currency = strtoupper($data['currency']);
+            $amount = (int) $data['amount']; // Ensure amount is stored as integer (minor units)
+
+            // Validate amount for the currency
+            if (!CurrencyHelper::isValidAmount($amount, $currency)) {
+                throw new Exception("Invalid amount for currency {$currency}");
+            }
 
             $paymentIntent = PaymentIntent::create([
                 'merchant_id' => $merchant->id,
                 'merchant_app_id' => $merchantAppId,
                 'customer_id' => $customerId,
                 'country_code' => $data['country'],
-                'amount' => $data['amount'],
+                'amount' => $amount, // Stored in minor units
                 'amount_received' => 0,
-                'amount_capturable' => $data['amount'],
-                'currency' => strtoupper($data['currency']),
+                'amount_capturable' => $amount,
+                'currency' => $currency,
                 'capture_method' => $data['capture_method'],
                 'payment_method_types' => $data['payment_method_types'],
                 'client_reference_id' => $data['client_reference_id'] ?? null,
@@ -101,7 +113,8 @@ class PaymentIntentService
                 'intent_id' => $paymentIntent->intent_id,
                 'merchant_id' => $merchant->id,
                 'customer_id' => $customerId,
-                'amount' => $paymentIntent->amount,
+                'amount' => $paymentIntent->amount, // Minor units
+                'amount_formatted' => CurrencyHelper::format($paymentIntent->amount, $currency),
                 'currency' => $paymentIntent->currency,
             ]);
 
@@ -255,10 +268,29 @@ class PaymentIntentService
         }
     }
 
+    /**
+     * Get analytics for payment intents
+     * All amounts are returned in minor units
+     */
     public function getAnalytics(Merchant $merchant, array $filters = []): array
     {
-        return PaymentIntent::getStatsForMerchant($merchant->id, $filters);
+        $stats = PaymentIntent::getStatsForMerchant($merchant->id, $filters);
+
+        // Add formatted amounts for convenience
+        if (!empty($stats['by_currency'])) {
+            foreach ($stats['by_currency'] as $currency => &$currencyStats) {
+                if (isset($currencyStats['total_amount'])) {
+                    $currencyStats['total_amount_formatted'] = CurrencyHelper::format(
+                        $currencyStats['total_amount'],
+                        $currency
+                    );
+                }
+            }
+        }
+
+        return $stats;
     }
+
 
 
 
@@ -423,5 +455,39 @@ class PaymentIntentService
                 'trace' => $e->getTraceAsString(),
             ]);
         }
+    }
+
+
+    /**
+     * Convert amount from major units to minor units for storage
+     * Use when accepting amounts from user input or external APIs
+     */
+    public function convertToMinorUnits(float $amount, string $currency): int
+    {
+        return CurrencyHelper::toMinorUnits($amount, $currency);
+    }
+
+    /**
+     * Convert amount from minor units to major units for display
+     */
+    public function convertFromMinorUnits($amount, string $currency): float
+    {
+        return CurrencyHelper::fromMinorUnits($amount, $currency);
+    }
+
+    /**
+     * Format amount for display (from minor units)
+     */
+    public function formatAmount($amount, string $currency): string
+    {
+        return CurrencyHelper::format($amount, $currency);
+    }
+
+    /**
+     * Get currency decimal places
+     */
+    public function getCurrencyDecimals(string $currency): int
+    {
+        return CurrencyHelper::getDecimals($currency);
     }
 }

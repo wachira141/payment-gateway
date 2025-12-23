@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Charge;
 use App\Models\PaymentIntent;
+use App\Helpers\CurrencyHelper;
 use App\Models\Merchant;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
@@ -65,7 +66,7 @@ class ChargeService extends BaseService
     public function createChargeFromPaymentIntent(string $paymentIntentId, array $data): Charge
     {
         $paymentIntent = PaymentIntent::findByPaymentIntentId($paymentIntentId);
-        
+
         if (!$paymentIntent) {
             throw new \Exception('Payment intent not found');
         }
@@ -83,7 +84,7 @@ class ChargeService extends BaseService
     public function captureCharge(string $chargeId, string $merchantId, array $data = []): array
     {
         $charge = Charge::findByIdAndMerchant($chargeId, $merchantId);
-        
+
         if (!$charge) {
             throw new \Exception('Charge not found');
         }
@@ -94,7 +95,7 @@ class ChargeService extends BaseService
 
         // Simulate payment processing
         $success = $this->processPaymentWithProvider($charge, $data);
-        
+
         if ($success) {
             $updateData = [
                 'status' => 'succeeded',
@@ -149,13 +150,14 @@ class ChargeService extends BaseService
     {
         // Simulate payment processing logic
         // In real implementation, this would integrate with payment processors
-        
+
         // Simulate 5% failure rate for demonstration
         return rand(1, 100) > 5;
     }
 
     /**
      * Get charge statistics for merchant
+     * All amounts are in minor units (cents/paise)
      */
     public function getChargeStatistics(string $merchantId, array $filters = []): array
     {
@@ -171,13 +173,61 @@ class ChargeService extends BaseService
 
         $charges = $query->get();
 
+        // Group by currency for multi-currency support
+        $byCurrency = $charges->groupBy('currency');
+        $currencyBreakdown = [];
+
+        foreach ($byCurrency as $currency => $currencyCharges) {
+            $succeeded = $currencyCharges->where('status', 'succeeded');
+            $totalVolume = $succeeded->sum('amount_captured');
+            $avgAmount = $succeeded->avg('amount_captured');
+
+            $currencyBreakdown[$currency] = [
+                'total_charges' => $currencyCharges->count(),
+                'successful_charges' => $succeeded->count(),
+                'failed_charges' => $currencyCharges->where('status', 'failed')->count(),
+                'pending_charges' => $currencyCharges->where('status', 'pending')->count(),
+                'total_volume' => $totalVolume, // Minor units
+                'total_volume_formatted' => CurrencyHelper::format($totalVolume, $currency),
+                'average_charge_amount' => $avgAmount, // Minor units
+                'average_charge_formatted' => $avgAmount ? CurrencyHelper::format($avgAmount, $currency) : null,
+            ];
+        }
+
         return [
             'total_charges' => $charges->count(),
             'successful_charges' => $charges->where('status', 'succeeded')->count(),
             'failed_charges' => $charges->where('status', 'failed')->count(),
             'pending_charges' => $charges->where('status', 'pending')->count(),
-            'total_volume' => $charges->where('status', 'succeeded')->sum('amount_captured'),
-            'average_charge_amount' => $charges->where('status', 'succeeded')->avg('amount_captured'),
+            'total_volume' => $charges->where('status', 'succeeded')->sum('amount_captured'), // Minor units
+            'average_charge_amount' => $charges->where('status', 'succeeded')->avg('amount_captured'), // Minor units
+            'currency_breakdown' => $currencyBreakdown,
         ];
+    }
+
+    /**
+     * Convert amount from major units (input) to minor units (storage)
+     * Use this when accepting user input amounts
+     */
+    public function convertToMinorUnits(float $amount, string $currency): int
+    {
+        return CurrencyHelper::toMinorUnits($amount, $currency);
+    }
+
+    /**
+     * Convert amount from minor units (storage) to major units (display)
+     * Use this when preparing amounts for display
+     */
+    public function convertFromMinorUnits($amount, string $currency): float
+    {
+        return CurrencyHelper::fromMinorUnits($amount, $currency);
+    }
+
+    /**
+     * Format amount for display (from minor units)
+     */
+    public function formatAmount($amount, string $currency): string
+    {
+        return CurrencyHelper::format($amount, $currency);
     }
 }

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Settlement;
 use App\Models\Charge;
 use App\Models\Refund;
+use App\Helpers\CurrencyHelper;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
@@ -228,17 +229,28 @@ class SettlementService extends BaseService
             $query->where('created_at', '<=', $filters['end_date']);
         }
 
+      
         $settlements = $query->get();
+        $completedSettlements = $settlements->where('status', 'completed');
+        
+        // Get currency for formatting (use first settlement's currency or default)
+        $currency = $completedSettlements->first()['currency'] ?? 'USD';
+        $totalAmount = $completedSettlements->sum('net_amount');
+        $totalFees = $completedSettlements->sum('fee_amount');
+        $avgAmount = $completedSettlements->avg('net_amount') ?? 0;
 
         return [
             'total_settlements' => $settlements->count(),
-            'completed_settlements' => $settlements->where('status', 'completed')->count(),
+            'completed_settlements' => $completedSettlements->count(),
             'failed_settlements' => $settlements->where('status', 'failed')->count(),
             'pending_settlements' => $settlements->where('status', 'pending')->count(),
-            'total_settlement_amount' => $settlements->where('status', 'completed')->sum('net_amount'),
-            'total_fees_collected' => $settlements->where('status', 'completed')->sum('fee_amount'),
-            'average_settlement_amount' => $settlements->where('status', 'completed')->avg('net_amount'),
-            'total_transactions_settled' => $settlements->where('status', 'completed')->sum('transaction_count'),
+            'total_settlement_amount' => $totalAmount,
+            'total_settlement_formatted' => CurrencyHelper::format($totalAmount, $currency),
+            'total_fees_collected' => $totalFees,
+            'total_fees_formatted' => CurrencyHelper::format($totalFees, $currency),
+            'average_settlement_amount' => $avgAmount,
+            'average_settlement_formatted' => CurrencyHelper::format((int) $avgAmount, $currency),
+            'total_transactions_settled' => $completedSettlements->sum('transaction_count'),
         ];
     }
 

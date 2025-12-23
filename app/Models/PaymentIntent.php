@@ -50,9 +50,9 @@ class PaymentIntent extends BaseModel
     ];
 
     protected $casts = [
-        'amount' => 'decimal:2',
-        'amount_received' => 'decimal:2',
-        'amount_capturable' => 'decimal:2',
+        'amount' => 'integer',  // Minor units (cents)
+        'amount_received' => 'integer',  // Minor units (cents)
+        'amount_capturable' => 'integer',  // Minor units (cents)
         'payment_method_types' => 'array',
         'metadata' => 'array',
         'shipping' => 'array',

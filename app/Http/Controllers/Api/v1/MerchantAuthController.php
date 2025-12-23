@@ -38,12 +38,15 @@ class MerchantAuthController
         // Update last login
         $merchantUser->updateLastLogin();
 
-        // Create token
-        $token = $merchantUser->createToken('merchant-dashboard')->plainTextToken;
+       
+        // Create Passport token
+        $tokenResult = $merchantUser->createToken('merchant-dashboard');
 
         return response()->json([
             'data' => [
-                'token' => $token,
+                'token' => $tokenResult->accessToken,
+                'token_type' => 'Bearer',
+                'expires_at' => $tokenResult->token->expires_at,
                 'merchant' => $merchantUser->merchant,
                 'user' => $merchantUser->only(['id', 'name', 'email', 'role', 'permissions']),
             ]
@@ -89,12 +92,15 @@ class MerchantAuthController
         // Update last login
         $merchantUser->updateLastLogin();
 
-        // Create token
-        $token = $merchantUser->createToken('merchant-dashboard')->plainTextToken;
+     
+        // Create Passport token
+        $tokenResult = $merchantUser->createToken('merchant-dashboard');
 
         return response()->json([
             'data' => [
-                'token' => $token,
+                'token' => $tokenResult->accessToken,
+                'token_type' => 'Bearer',
+                'expires_at' => $tokenResult->token->expires_at,
                 'merchant' => $merchant,
                 'user' => $merchantUser->only(['id', 'name', 'email', 'role', 'permissions']),
             ]
@@ -106,7 +112,8 @@ class MerchantAuthController
      */
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        $request->user()->token()->revoke();
+
 
         return response()->json([
             'message' => 'Logged out successfully'
@@ -119,12 +126,13 @@ class MerchantAuthController
     public function me(Request $request)
     {
         $merchantUser = $request->user();
-        
+
         return response()->json([
+            'success' => true,
             'data' => [
                 'merchant' => $merchantUser->merchant,
-                'user' => $merchantUser->only(['id', 'name', 'email', 'role', 'permissions']),
-            ]
+                'merchant_user' => $this->formatMerchantUserWithRBAC($merchantUser),
+            ],
         ]);
     }
 
@@ -145,5 +153,52 @@ class MerchantAuthController
         ];
 
         return $currencies[$countryCode] ?? 'USD';
+    }
+
+
+    protected function formatMerchantUserWithRBAC(MerchantUser $user): array
+    {
+        return [
+            'id' => $user->id,
+            'merchant_id' => $user->merchant_id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'phone' => $user->phone,
+            'is_primary' => $user->is_primary,
+            'status' => $user->status,
+            'roles' => $user->roles()->with('permissions')->get()->map(fn($role) => [
+                'id' => $role->pivot->id ?? null,
+                'role_id' => $role->id,
+                'role' => [
+                    'id' => $role->id,
+                    'name' => $role->name,
+                    'display_name' => $role->display_name,
+                    'is_system' => $role->is_system,
+                    'permissions' => $role->permissions->pluck('name'),
+                ],
+                'assigned_by' => $role->pivot->assigned_by,
+                'assigned_at' => $role->pivot->assigned_at,
+            ]),
+            'direct_permissions' => $user->directPermissions()
+                ->wherePivot('expires_at', null)
+                ->orWherePivot('expires_at', '>', now())
+                ->get()
+                ->map(fn($perm) => [
+                    'id' => $perm->pivot->id ?? null,
+                    'permission_id' => $perm->id,
+                    'permission' => [
+                        'id' => $perm->id,
+                        'name' => $perm->name,
+                        'display_name' => $perm->display_name,
+                        'module' => $perm->module,
+                    ],
+                    'granted_by' => $perm->pivot->granted_by,
+                    'granted_at' => $perm->pivot->granted_at,
+                    'expires_at' => $perm->pivot->expires_at,
+                ]),
+            'resolved_permissions' => $user->getResolvedPermissions(),
+            'created_at' => $user->created_at,
+            'updated_at' => $user->updated_at,
+        ];
     }
 }

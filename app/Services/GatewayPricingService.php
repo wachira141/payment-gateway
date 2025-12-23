@@ -6,6 +6,8 @@ use App\Models\GatewayPricingConfig;
 use App\Models\DefaultGatewayPricing;
 use App\Models\PaymentTransaction;
 use App\Models\Merchant;
+use App\Helpers\CurrencyHelper;
+
 use Illuminate\Support\Facades\Log;
 
 class GatewayPricingService extends BaseService
@@ -106,11 +108,10 @@ class GatewayPricingService extends BaseService
      */
     private function calculateFees(float $amount, array $pricing): array
     {
-        // Convert amount to smallest currency unit (cents/kobo/etc.)
-        $amountInCents = round($amount * 100);
+        // currency already in the smallest unit (cents/kobo/etc.)
 
-        $processingFee = ($amountInCents * $pricing['processing_fee_rate']) + $pricing['processing_fee_fixed'];
-        $applicationFee = ($amountInCents * $pricing['application_fee_rate']) + $pricing['application_fee_fixed'];
+        $processingFee = ($amount * $pricing['processing_fee_rate']) + $pricing['processing_fee_fixed'];
+        $applicationFee = ($amount * $pricing['application_fee_rate']) + $pricing['application_fee_fixed'];
         
         // Apply min/max limits to processing fee
         if ($pricing['min_fee'] > 0) {
@@ -128,7 +129,7 @@ class GatewayPricingService extends BaseService
             'application_fee' => round($applicationFee / 100, 2),
             'total_fees' => round($totalFees / 100, 2),
             'commission_amount' => round($applicationFee / 100, 2), // Platform commission
-            'provider_amount' => round(($amountInCents - $totalFees) / 100, 2), // Amount after all fees
+            'provider_amount' => round(($amount - $totalFees) / 100, 2), // Amount after all fees
             'gateway_code' => $pricing['gateway_code'],
             'payment_method_type' => $pricing['payment_method_type'],
             'breakdown' => $pricing
@@ -164,9 +165,9 @@ class GatewayPricingService extends BaseService
 
         $rates = $fallbackRates[$transaction->gateway_code] ?? $fallbackRates['stripe'];
         
-        $amountInCents = round($transaction->amount * 100);
-        $processingFee = ($amountInCents * $rates['processing_fee_rate']) + $rates['processing_fee_fixed'];
-        $applicationFee = ($amountInCents * $rates['application_fee_rate']);
+
+        $processingFee = ($transaction->amount * $rates['processing_fee_rate']) + $rates['processing_fee_fixed'];
+        $applicationFee = ($transaction->amount * $rates['application_fee_rate']);
         
         if (isset($rates['min_fee'])) {
             $processingFee = max($processingFee, $rates['min_fee']);
@@ -179,7 +180,7 @@ class GatewayPricingService extends BaseService
             'application_fee' => round($applicationFee / 100, 2),
             'total_fees' => round($totalFees / 100, 2),
             'commission_amount' => round($applicationFee / 100, 2),
-            'provider_amount' => round(($amountInCents - $totalFees) / 100, 2),
+            'provider_amount' => round(($transaction->amount - $totalFees) / 100, 2),
             'gateway_code' => $transaction->gateway_code,
             'payment_method_type' => $transaction->payment_method_type,
             'breakdown' => array_merge($rates, ['fallback' => true])

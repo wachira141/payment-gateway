@@ -16,10 +16,10 @@ return new class extends Migration
             $table->string('transaction_id')->unique()->comment('Internal transaction ID');
             
             // Changed foreign keys
-            $table->string('merchant_id');
+            $table->uuid('merchant_id');
             $table->foreign('merchant_id')->references('id')->on('merchants')->onDelete('cascade');
             
-            $table->string('payment_gateway_id');
+            $table->uuid('payment_gateway_id');
             $table->foreign('payment_gateway_id')->references('id')->on('payment_gateways')->onDelete('restrict');
             
             $table->string('gateway_transaction_id')->nullable()->comment('Gateway-specific transaction ID');

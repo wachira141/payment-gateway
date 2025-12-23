@@ -47,19 +47,6 @@ class LedgerService
                 ]
             ];
 
-                  // Record the transaction in ledger
-        // app(LedgerService::class)->recordEntry([
-        //     'merchant_id' => $merchantId,
-        //     'account_name' => 'merchant_balance_reserved',
-        //     'currency' => $currency,
-        //     'debit_amount' => $amount,
-        //     'credit_amount' => 0,
-        //     'balance_after' => $balance->reserved_amount,
-        //     'transaction_type' => 'reserved_processed',
-        //     'description' => $reason,
-        //     'reference_id' => $referenceId,
-        //     'posted_at' => now()
-        // ]);
             // Create ledger entries
             LedgerEntry::createTransaction(
                 $merchant->id,

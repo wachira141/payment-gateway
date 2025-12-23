@@ -59,7 +59,7 @@ class ApiKeyService extends BaseService
         $keyHash = Hash::make($keyValue);
 
         // Validate scopes
-        $allowedScopes = ['read', 'write', 'admin'];
+        $allowedScopes = array_keys(config('app.scopes', []));
         $scopes = array_intersect($data['scopes'], $allowedScopes);
 
         if (empty($scopes)) {
@@ -348,7 +348,7 @@ class ApiKeyService extends BaseService
                 'created_at' => $apiKey['created_at'],
                 'key' => $apiKey['key'], // This is the masked key
                 'app_id' => $apiKey['app']['id'],
-                'napp_ame' => $apiKey['app']['name'],
+                'app_name' => $apiKey['app']['name'],
                 'app_description' => $apiKey['app']['description'],
                 'app_is_live' => $apiKey['app']['is_live'],
                 'app_is_active' => $apiKey['app']['is_active'],

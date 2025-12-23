@@ -14,7 +14,7 @@ return new class extends Migration
     {
         Schema::create('payment_webhooks', function (Blueprint $table) {
             $table->uuid('id')->primary();
-            $table->string('payment_gateway_id', 36);
+            $table->uuid('payment_gateway_id', 36);
             $table->string('webhook_id')->unique()->comment('Unique webhook identifier');
             $table->string('event_type')->comment('Webhook event type');
             $table->string('gateway_event_id')->nullable()->comment('Gateway-specific event ID');
@@ -25,7 +25,7 @@ return new class extends Migration
             $table->timestamp('processed_at')->nullable()->comment('When webhook was processed');
             $table->timestamps();
             
-            $table->foreign('payment_gateway_id')->references('id')->on('merchants')->onDelete('restrict');
+            $table->foreign('payment_gateway_id')->references('id')->on('payment_gateways')->onDelete('restrict');
 
             $table->index(['event_type']);
             $table->index(['status']);

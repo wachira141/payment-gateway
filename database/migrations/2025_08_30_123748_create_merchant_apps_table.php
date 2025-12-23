@@ -24,8 +24,9 @@ return new class extends Migration
             $table->json('webhook_events')->nullable();
             $table->json('settings')->nullable();
             $table->timestamp('secret_regenerated_at')->nullable();
-            $table->timestamp('deleted_at')->nullable();
+            
             $table->timestamps();
+            $table->softDeletes();
 
             $table->foreign('merchant_id')->references('id')->on('merchants')->onDelete('cascade');
 

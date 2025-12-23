@@ -17,7 +17,7 @@ return new class extends Migration
             // $table->foreignId('payment_intent_id')->constrained()->onDelete('cascade');
             $table->string('merchant_id', 36);
             // Foreign key constraint
-            $table->foreign('merchant_id')->references('merchant_id')->on('merchants')->onDelete('cascade');
+            $table->foreign('merchant_id')->references('id')->on('merchants')->onDelete('cascade');
             $table->decimal('amount', 15, 4);
             $table->string('currency', 3);
             $table->enum('status', ['pending', 'processing', 'succeeded', 'failed', 'cancelled', 'disputed'])->default('pending');

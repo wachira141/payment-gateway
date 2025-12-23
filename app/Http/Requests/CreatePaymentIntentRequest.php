@@ -11,11 +11,16 @@ class CreatePaymentIntentRequest extends FormRequest
     {
         return true;
     }
+    
+    /**
+     * Validation rules for creating a payment intent.
+     * Note: Amount should be in minor units (cents) - e.g., 2500 for $25.00
+     */
 
     public function rules(): array
     {
         return [
-            'amount' => ['required', 'numeric', 'min:1'],
+            'amount' => ['required', 'integer', 'min:1'],  // Minor units (cents)
             'currency' => ['required', 'string', 'size:3', 'uppercase'],
             'country' => ['required', 'string', 'size:2', 'uppercase'],
             'capture_method' => ['sometimes', Rule::in(['automatic', 'manual'])],

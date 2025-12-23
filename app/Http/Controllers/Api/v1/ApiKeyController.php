@@ -55,7 +55,7 @@ class ApiKeyController extends Controller
             $validator = Validator::make($request->all(), [
                 'name' => 'required|string|max:255',
                 'scopes' => 'required|array',
-                'scopes.*' => 'required|string|in:read,write,admin',
+                'scopes.*' => 'required|string',
                 'app_id' => 'sometimes|string',
                 'expires_at' => 'sometimes|date|after:now',
                 'description' => 'sometimes|string|max:500'

@@ -6,6 +6,7 @@ use App\Models\PaymentIntent;
 use App\Models\Customer;
 use App\Models\SystemActivity;
 use App\Models\MerchantBalance;
+use App\Helpers\CurrencyHelper;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -47,7 +48,11 @@ class AnalyticsService extends BaseService
             ->whereBetween('created_at', [$start, $end])
             ->get();
 
-        $totalVolume = $paymentIntents->where('status', 'succeeded')->sum('amount') / 100; // Convert from cents
+        // Convert from minor units using CurrencyHelper
+        $totalVolume = CurrencyHelper::fromMinorUnits(
+            $paymentIntents->where('status', 'succeeded')->sum('amount'),
+            $currency
+        );
         $totalTransactions = $paymentIntents->count();
         $successfulTransactions = $paymentIntents->where('status', 'succeeded')->count();
         $successRate = $totalTransactions > 0 ? ($successfulTransactions / $totalTransactions) * 100 : 0;

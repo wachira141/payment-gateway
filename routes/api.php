@@ -22,8 +22,10 @@ use App\Http\Controllers\Api\v1\FXController;
 use App\Http\Controllers\Api\v1\MerchantWebhookController;
 use App\Http\Controllers\Api\v1\SupportedBankController;
 use App\Http\Controllers\Api\v1\SupportedPayoutMethodController;
+use App\Http\Controllers\Api\v1\RoleManagementController;
 
-Route::prefix('v1')->group(function () {
+
+Route::middleware(['network.private'])->prefix('v1')->group(function () {
     // Public merchant authentication routes
     Route::prefix('auth/merchant')->group(function () {
         Route::post('login', [MerchantAuthController::class, 'login']);
@@ -36,7 +38,7 @@ Route::prefix('v1')->group(function () {
 
 
     // Protected merchant routes (require authentication)
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:api'])->group(function () {
         // Merchant authentication management
         Route::prefix('/')->group(function () {
             Route::post('logout', [MerchantAuthController::class, 'logout']);
@@ -221,14 +223,34 @@ Route::prefix('v1')->group(function () {
             Route::get('options', [\App\Http\Controllers\Api\v1\GatewayPricingController::class, 'getGatewayOptions']);
         });
 
-         // Analytics
-         Route::prefix('analytics')->group(function () {
+        // Analytics
+        Route::prefix('analytics')->group(function () {
             Route::get('dashboard', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getDashboardMetrics']);
             Route::get('developer', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getDeveloperMetrics']);
             Route::get('activity', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getSystemActivity']);
             Route::get('chart', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getChartData']);
             Route::get('system-health', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getSystemHealth']);
         });
+
+        Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
+            // Roles & Permissions
+            Route::get('/roles', [RoleManagementController::class, 'listRoles']);
+            Route::get('/permissions', [RoleManagementController::class, 'listPermissions']);
+
+            // User role management
+            Route::get('/merchant/users/{userId}/roles', [RoleManagementController::class, 'getUserRoles']);
+            Route::post('/merchant/users/{userId}/roles', [RoleManagementController::class, 'assignRole']);
+            Route::delete('/merchant/users/{userId}/roles/{roleId}', [RoleManagementController::class, 'removeRole']);
+
+            // User permission management
+            Route::get('/merchant/users/{userId}/permissions', [RoleManagementController::class, 'getUserPermissions']);
+            Route::post('/merchant/users/{userId}/permissions', [RoleManagementController::class, 'grantPermission']);
+            Route::delete('/merchant/users/{userId}/permissions/{permissionId}', [RoleManagementController::class, 'revokePermission']);
+
+            // Audit logs
+            Route::get('/merchant/rbac/audit-logs', [RoleManagementController::class, 'getAuditLogs']);
+        });
+
 
 
         // API routes (for third-party integrations - protected by API key)

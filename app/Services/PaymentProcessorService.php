@@ -8,6 +8,7 @@ use App\Models\PaymentWebhook;
 use App\Services\StripePaymentService;
 use App\Services\MpesaPaymentService;
 use App\Services\TelebirrPaymentService;
+use App\Helpers\CurrencyHelper;
 use App\Services\PaymentIntentTransactionService;
 use App\Services\CustomerResolutionService;
 
@@ -65,6 +66,7 @@ class PaymentProcessorService
             // Resolve customer information from payment data
             $customerId = $this->resolveCustomerForPayment($data);
 
+            
             // Create transaction record
             $transaction = PaymentTransaction::createTransaction([
                 'transaction_id' => Str::uuid(),
@@ -78,7 +80,8 @@ class PaymentProcessorService
                 'description' => $data['description'] ?? null,
                 'metadata' => $data['metadata'] ?? [],
             ]);
-
+            
+            $data['amount'] = CurrencyHelper::fromMinorUnits($data['amount'], $data['currency']);
             // Process payment based on gateway type
             $result = $this->processPaymentByGateway($gateway, $transaction, $data);
 
