@@ -38,7 +38,7 @@ class MerchantAuthController
         // Update last login
         $merchantUser->updateLastLogin();
 
-       
+
         // Create Passport token
         $tokenResult = $merchantUser->createToken('merchant-dashboard');
 
@@ -62,21 +62,28 @@ class MerchantAuthController
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:merchant_users',
             'password' => 'required|string|min:8|confirmed',
-            'business_name' => 'required|string|max:255',
+            'legal_name' => 'required|string|max:255',
+            'display_name' => 'required|string|max:255',
             'business_type' => 'required|string|in:sole_proprietor,partnership,corporation,ngo',
-            'country' => 'required|string|max:2',
+            'country_code' => 'required|string|max:2',
         ]);
 
         // Create merchant first
         $merchant = Merchant::createWithDefaults([
-            'name' => $request->business_name,
+            'legal_name' => $request->legal_name,
+            'display_name' => $request->display_name,
+            'name' => $request->legal_name,
             'email' => $request->email,
-            'business_name' => $request->business_name,
+            'business_name' => $request->legal_name,
             'business_type' => $request->business_type,
-            'country' => $request->country,
-            'currency' => $this->getCurrencyByCountry($request->country),
+            'country' => $request->country_code,
+            'country_code' => $request->country_code,
+            'default_currency' => $this->getCurrencyByCountry($request->country_code),
+            'currency' => $this->getCurrencyByCountry($request->country_code),
             'status' => 'active',
             'compliance_status' => 'pending',
+            'kyc_tier' => 0,
+            'kyc_status' => 'pending',
         ]);
 
         // Create merchant user
@@ -92,7 +99,7 @@ class MerchantAuthController
         // Update last login
         $merchantUser->updateLastLogin();
 
-     
+
         // Create Passport token
         $tokenResult = $merchantUser->createToken('merchant-dashboard');
 
@@ -132,6 +139,49 @@ class MerchantAuthController
             'data' => [
                 'merchant' => $merchantUser->merchant,
                 'merchant_user' => $this->formatMerchantUserWithRBAC($merchantUser),
+            ],
+        ]);
+    }
+
+    /**
+     * Update merchant profile
+     * PUT /api/v1/merchant/profile
+     */
+    public function updateProfile(Request $request)
+    {
+        $request->validate([
+            'display_name' => 'sometimes|string|max:255',
+            'business_type' => 'sometimes|string|in:sole_proprietor,partnership,corporation,ngo',
+            'default_currency' => 'sometimes|string|max:3',
+            'website' => 'nullable|url|max:255',
+            'business_description' => 'nullable|string|max:1000',
+        ]);
+
+        $merchant = $request->user()->merchant;
+
+        $updateData = $request->only([
+            'display_name',
+            'business_type',
+            'default_currency',
+            'website',
+            'business_description',
+        ]);
+
+        $merchant->update(array_filter($updateData, fn($value) => $value !== null));
+
+        return response()->json([
+            'message' => 'Profile updated successfully',
+            'merchant' => [
+                'id' => $merchant->merchant_id,
+                'legal_name' => $merchant->legal_name,
+                'display_name' => $merchant->display_name,
+                'country_code' => $merchant->country_code,
+                'default_currency' => $merchant->default_currency,
+                'business_type' => $merchant->business_type,
+                'website' => $merchant->website,
+                'business_description' => $merchant->business_description,
+                'status' => $merchant->status,
+                'compliance_status' => $merchant->compliance_status,
             ],
         ]);
     }

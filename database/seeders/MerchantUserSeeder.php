@@ -6,92 +6,109 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Carbon\Carbon;
-use Illuminate\Support\Str;
 
 class MerchantUserSeeder extends Seeder
 {
-    /**
-     * Run the database seeds.
-     */
     public function run(): void
     {
-
-        //['owner', 'admin', 'developer', 'finance', 'support'])
+        // Map display_name → users
         $merchantUsers = [
-            [
-                'id' => Str::random(16),
-                'merchant_id' => "merch_1", // assuming M001 is ID=1 in merchants table
-                'name' => 'John Doe',
-                'email' => 'john.doe@techsolutions.com',
-                'password' => Hash::make('password123'),
-                'role' => 'owner',
-                'status' => 'active',
-                'permissions' => json_encode(['manage_apps', 'view_payments', 'manage_payouts']),
-                'last_login_at' => Carbon::now()->subDays(2),
-                'phone' => '+1-555-123-4567',
-                'metadata' => json_encode([
-                    'position' => 'CEO',
-                    'department' => 'Management'
-                ]),
-                'created_at' => Carbon::now()->subMonths(6),
-                'updated_at' => Carbon::now()->subMonths(1),
+            'Tech Solutions' => [
+                [
+                    'name' => 'John Doe',
+                    'email' => 'john.doe@techsolutions.com',
+                    'role' => 'owner',
+                    'status' => 'active',
+                    'permissions' => ['manage_apps', 'view_payments', 'manage_payouts'],
+                    'phone' => '+1-555-123-4567',
+                    'metadata' => [
+                        'position' => 'CEO',
+                        'department' => 'Management',
+                    ],
+                    'last_login_at' => Carbon::now()->subDays(2),
+                ],
             ],
-            [
-                'id' => Str::random(16),
-                'merchant_id' => "merch_2", // assuming M002 is ID=2
-                'name' => 'Sarah Green',
-                'email' => 'sarah.green@greenearthorganics.ca',
-                'password' => Hash::make('securepass'),
-                'role' => 'admin',
-                'status' => 'active',
-                'permissions' => json_encode(['manage_apps', 'view_payments']),
-                'last_login_at' => Carbon::now()->subWeek(),
-                'phone' => '+1-416-555-7890',
-                'metadata' => json_encode([
-                    'position' => 'Operations Manager',
-                    'department' => 'Logistics'
-                ]),
-                'created_at' => Carbon::now()->subMonths(4),
-                'updated_at' => Carbon::now()->subWeeks(2),
+
+            'Global Retail' => [
+                [
+                    'name' => 'Sarah Green',
+                    'email' => 'sarah.green@greenearthorganics.ca',
+                    'role' => 'admin',
+                    'status' => 'active',
+                    'permissions' => ['manage_apps', 'view_payments'],
+                    'phone' => '+1-416-555-7890',
+                    'metadata' => [
+                        'position' => 'Operations Manager',
+                        'department' => 'Logistics',
+                    ],
+                    'last_login_at' => Carbon::now()->subWeek(),
+                ],
             ],
-            [
-                'id' => Str::random(16),
-                'merchant_id' => "merch_3", // assuming M003 is ID=3
-                'name' => 'Michael Brown',
-                'email' => 'michael.brown@globalpartners.co.uk',
-                'password' => Hash::make('test1234'),
-                'role' => 'finance',
-                'status' => 'pending',
-                'permissions' => json_encode(['view_payments']),
-                'last_login_at' => null,
-                'phone' => '+44-20-5555-6789',
-                'metadata' => json_encode([
-                    'position' => 'Consultant',
-                    'specialization' => 'Market Entry'
-                ]),
-                'created_at' => Carbon::now()->subWeeks(2),
-                'updated_at' => Carbon::now()->subDays(3),
+
+            'Fresh Foods' => [
+                [
+                    'name' => 'Michael Brown',
+                    'email' => 'michael.brown@globalpartners.co.uk',
+                    'role' => 'finance',
+                    'status' => 'pending',
+                    'permissions' => ['view_payments'],
+                    'phone' => '+44-20-5555-6789',
+                    'metadata' => [
+                        'position' => 'Consultant',
+                        'specialization' => 'Market Entry',
+                    ],
+                    'last_login_at' => null,
+                ],
             ],
-            [
-                'id' => Str::random(16),
-                'merchant_id' => "merch_4", // assuming M004 is ID=4
-                'name' => 'Emily White',
-                'email' => 'emily.white@hopeforchildren.org.au',
-                'password' => Hash::make('children2024'),
-                'role' => 'admin',
-                'status' => 'inactive',
-                'permissions' => json_encode(['manage_payouts']),
-                'last_login_at' => Carbon::now()->subMonth(),
-                'phone' => '+61-2-5555-1234',
-                'metadata' => json_encode([
-                    'position' => 'Program Director',
-                    'focus_area' => 'Education'
-                ]),
-                'created_at' => Carbon::now()->subMonths(2),
-                'updated_at' => Carbon::now()->subWeek(),
-            ]
+
+            'Fashion Trends' => [
+                [
+                    'name' => 'Emily White',
+                    'email' => 'emily.white@hopeforchildren.org.au',
+                    'role' => 'admin',
+                    'status' => 'inactive',
+                    'permissions' => ['manage_payouts'],
+                    'phone' => '+61-2-5555-1234',
+                    'metadata' => [
+                        'position' => 'Program Director',
+                        'focus_area' => 'Education',
+                    ],
+                    'last_login_at' => Carbon::now()->subMonth(),
+                ],
+            ],
         ];
 
-        DB::table('merchant_users')->insert($merchantUsers);
+        foreach ($merchantUsers as $merchantName => $users) {
+            $merchant = DB::table('merchants')
+                ->where('display_name', $merchantName)
+                ->first();
+
+            if (!$merchant) {
+                $this->command->warn("Merchant not found: {$merchantName}");
+                continue;
+            }
+
+            foreach ($users as $user) {
+                DB::table('merchant_users')->updateOrInsert(
+                    // UNIQUE KEY
+                    ['email' => $user['email']],
+
+                    // VALUES TO UPDATE / INSERT
+                    [
+                        'merchant_id'   => $merchant->id,
+                        'name'          => $user['name'],
+                        'password'      => Hash::make('password123'),
+                        'role'          => $user['role'],
+                        'status'        => $user['status'],
+                        'permissions'   => json_encode($user['permissions']),
+                        'phone'         => $user['phone'],
+                        'metadata'      => json_encode($user['metadata']),
+                        'last_login_at' => $user['last_login_at'],
+                        'updated_at'    => now(),
+                        'created_at'    => now(),
+                    ]
+                );
+            }
+        }
     }
 }

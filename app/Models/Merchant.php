@@ -34,6 +34,14 @@ class Merchant extends BaseModel
         'suspended_at' => 'datetime',
     ];
 
+    protected static function booted()
+    {
+        static::creating(function ($model) {
+            $model->merchant_id ??= 'merch_' . Str::random(16);
+        });
+    }
+    
+
 
     /**
      * Get merchant users

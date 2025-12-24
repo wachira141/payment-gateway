@@ -23,6 +23,8 @@ use App\Http\Controllers\Api\v1\MerchantWebhookController;
 use App\Http\Controllers\Api\v1\SupportedBankController;
 use App\Http\Controllers\Api\v1\SupportedPayoutMethodController;
 use App\Http\Controllers\Api\v1\RoleManagementController;
+use App\Http\Controllers\Api\v1\KycConfigController;
+use App\Http\Controllers\Api\v1\MerchantKycController;
 
 
 Route::middleware(['network.private'])->prefix('v1')->group(function () {
@@ -179,6 +181,23 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
             Route::get('/best-gateway', [PaymentController::class, 'getBestGateway']);
         });
 
+         // Merchant Profile
+         Route::put('merchant/profile', [MerchantAuthController::class, 'updateProfile']);
+
+        // Merchant KYC
+        Route::prefix('merchants/kyc')->group(function () {
+            Route::get('status', [MerchantKycController::class, 'getStatus']);
+            Route::get('documents', [MerchantKycController::class, 'getDocuments']);
+            Route::post('documents', [MerchantKycController::class, 'uploadDocument']);
+            Route::delete('documents/{documentId}', [MerchantKycController::class, 'deleteDocument']);
+            Route::post('submit', [MerchantKycController::class, 'submitForReview']);
+            Route::get('upgrade-requirements', [MerchantKycController::class, 'getUpgradeRequirements']);
+            Route::post('check-limit', [MerchantKycController::class, 'checkTransactionLimit']);
+            Route::get('config', [MerchantKycController::class, 'getConfig']);
+            Route::get('profile', [MerchantKycController::class, 'getKycProfile']);
+            Route::put('profile', [MerchantKycController::class, 'updateKycProfile']);
+        });
+
 
         // api keys management
         Route::prefix('api-keys')->group(function () {
@@ -290,5 +309,15 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
         Route::post('mpesa/b2c/result', [WebhookController::class, 'handleMpesaB2CResult']);
         Route::post('mpesa/b2c/timeout', [WebhookController::class, 'handleMpesaB2CTimeout']);
         Route::post('telebirr', [WebhookController::class, 'handleTelebirr']);
+    });
+
+    // Public KYC config endpoints (no auth required - for onboarding)
+    Route::prefix('kyc')->group(function () {
+        Route::get('countries', [KycConfigController::class, 'getSupportedCountries']);
+        Route::get('config/{countryCode}', [KycConfigController::class, 'getCountryConfig']);
+        Route::get('/config/{countryCode}/tiers', [KycConfigController::class, 'getTiers']);
+        Route::get('tiers/{countryCode}/{tierLevel}', [KycConfigController::class, 'getTierRequirements']);
+        Route::get('config/{countryCode}/document-types', [KycConfigController::class, 'getDocumentTypes']);
+        Route::post('validate-document-value', [KycConfigController::class, 'validateDocumentValue']);
     });
 });

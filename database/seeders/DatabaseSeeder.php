@@ -25,6 +25,9 @@ class DatabaseSeeder extends Seeder
             DefaultGatewayPricingSeeder::class,
             SupportedBanksSeeder::class,
             SupportedPayoutMethodsSeeder::class,
+            KycDocumentTypesSeeder::class,
+            KycCountryRequirementsSeeder::class,
+
         ]);
     }
 }

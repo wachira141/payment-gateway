@@ -55,9 +55,17 @@ class LanguagesSeeder extends Seeder
         ];
 
         foreach ($languages as $language) {
-            // add id
-            $language['id'] = \Illuminate\Support\Str::uuid()->toString();
-            Language::create($language);
+            Language::updateOrCreate(
+                // UNIQUE KEY
+                ['code' => $language['code']],
+
+                // FIELDS TO UPDATE
+                [
+                    'name'        => $language['name'],
+                    'native_name' => $language['native_name'],
+                    'type'        => $language['type'],
+                ]
+            );
         }
     }
 }

@@ -132,7 +132,20 @@ class SupportedBanksSeeder extends Seeder
         ];
 
         foreach ($banks as $bank) {
-            SupportedBank::create($bank);
+            SupportedBank::updateOrCreate(
+                // UNIQUE KEY
+                [
+                    'country_code' => $bank['country_code'],
+                    'bank_code'    => $bank['bank_code'],
+                ],
+                // FIELDS TO UPDATE
+                [
+                    'bank_name'  => $bank['bank_name'],
+                    'swift_code' => $bank['swift_code'],
+                    'bank_type'  => $bank['bank_type'],
+                    'is_active'  => $bank['is_active'],
+                ]
+            );
         }
     }
 }

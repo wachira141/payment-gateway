@@ -15,7 +15,6 @@ class MerchantSeeder extends Seeder
     {
         $merchants = [
             [
-                'merchant_id' => 'merch_' . Str::random(16),
                 'legal_name' => 'Tech Solutions Inc.',
                 'display_name' => 'Tech Solutions',
                 'business_type' => 'technology',
@@ -42,7 +41,6 @@ class MerchantSeeder extends Seeder
                 'approved_at' => now()->subMonths(6),
             ],
             [
-                'merchant_id' => 'merch_' . Str::random(16),
                 'legal_name' => 'Global Retailers Ltd.',
                 'display_name' => 'Global Retail',
                 'business_type' => 'retail',
@@ -69,7 +67,6 @@ class MerchantSeeder extends Seeder
                 'approved_at' => now()->subMonths(3),
             ],
             [
-                'merchant_id' => 'merch_' . Str::random(16),
                 'legal_name' => 'Fresh Foods GmbH',
                 'display_name' => 'Fresh Foods',
                 'business_type' => 'food',
@@ -95,7 +92,6 @@ class MerchantSeeder extends Seeder
                 ],
             ],
             [
-                'merchant_id' => 'merch_' . Str::random(16),
                 'legal_name' => 'Fashion Trends SAS',
                 'display_name' => 'Fashion Trends',
                 'business_type' => 'fashion',
@@ -123,11 +119,18 @@ class MerchantSeeder extends Seeder
             ]
         ];
 
-        $id = 0;
         foreach ($merchants as $merchantData) {
-            $id++;
-            $merchantData['id'] = 'merch_'. $id; // Simple incremental UUID for demo purposes;
-            Merchant::createWithDefaults($merchantData);
+            // Check if merchant exists
+            $merchant = Merchant::where('legal_name', $merchantData['legal_name'])->first();
+
+            if (!$merchant) {
+                // Create new merchant with defaults
+                Merchant::createWithDefaults($merchantData);
+                $this->command->info("Created merchant: {$merchantData['display_name']}");
+            } else {
+                // Merchant exists, just update if needed
+                $this->command->info("Merchant already exists: {$merchantData['display_name']}");
+            }
         }
     }
 }

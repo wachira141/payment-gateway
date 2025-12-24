@@ -8,6 +8,7 @@ return [
 
     'allowed_origins' => [
         'http://localhost:8080', 
+        'https://lovable.dev', 
         'https://a752ad05-ccce-44ac-8ca0-df596e5bbcb8.lovableproject.com',
         'https://id-preview--a752ad05-ccce-44ac-8ca0-df596e5bbcb8.lovable.app',
     ],
