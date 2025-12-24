@@ -19,7 +19,9 @@ class DatabaseSeeder extends Seeder
         $this->call([
             MerchantSeeder::class,
             MerchantUserSeeder::class,
+            RolesAndPermissionsSeeder::class,
             CountrySeeder::class,
+            CurrencySeeder::class,
             PaymentGatewaySeeder::class,
             LanguagesSeeder::class,
             DefaultGatewayPricingSeeder::class,

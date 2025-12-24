@@ -7,11 +7,13 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Support\Str;
+
 
 class MerchantUser extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, HasUuids;
-    
+
     protected $primaryKey = 'id';
     protected $keyType = 'string';
     public $incrementing = false;
@@ -52,6 +54,7 @@ class MerchantUser extends Authenticatable
             }
         });
     }
+
 
     /**
      * Get the merchant

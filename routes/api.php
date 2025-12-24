@@ -25,6 +25,10 @@ use App\Http\Controllers\Api\v1\SupportedPayoutMethodController;
 use App\Http\Controllers\Api\v1\RoleManagementController;
 use App\Http\Controllers\Api\v1\KycConfigController;
 use App\Http\Controllers\Api\v1\MerchantKycController;
+use App\Http\Controllers\Api\v1\MerchantUserController;
+use App\Http\Controllers\Api\v1\WalletController;
+use App\Http\Controllers\Api\v1\WalletTopUpController;
+use App\Http\Controllers\Api\v1\WalletTransferController;
 
 
 Route::middleware(['network.private'])->prefix('v1')->group(function () {
@@ -181,8 +185,8 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
             Route::get('/best-gateway', [PaymentController::class, 'getBestGateway']);
         });
 
-         // Merchant Profile
-         Route::put('merchant/profile', [MerchantAuthController::class, 'updateProfile']);
+        // Merchant Profile
+        Route::put('merchant/profile', [MerchantAuthController::class, 'updateProfile']);
 
         // Merchant KYC
         Route::prefix('merchants/kyc')->group(function () {
@@ -251,24 +255,34 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
             Route::get('system-health', [\App\Http\Controllers\Api\v1\AnalyticsController::class, 'getSystemHealth']);
         });
 
-        Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
-            // Roles & Permissions
-            Route::get('/roles', [RoleManagementController::class, 'listRoles']);
-            Route::get('/permissions', [RoleManagementController::class, 'listPermissions']);
-
-            // User role management
-            Route::get('/merchant/users/{userId}/roles', [RoleManagementController::class, 'getUserRoles']);
-            Route::post('/merchant/users/{userId}/roles', [RoleManagementController::class, 'assignRole']);
-            Route::delete('/merchant/users/{userId}/roles/{roleId}', [RoleManagementController::class, 'removeRole']);
-
-            // User permission management
-            Route::get('/merchant/users/{userId}/permissions', [RoleManagementController::class, 'getUserPermissions']);
-            Route::post('/merchant/users/{userId}/permissions', [RoleManagementController::class, 'grantPermission']);
-            Route::delete('/merchant/users/{userId}/permissions/{permissionId}', [RoleManagementController::class, 'revokePermission']);
-
-            // Audit logs
-            Route::get('/merchant/rbac/audit-logs', [RoleManagementController::class, 'getAuditLogs']);
+        // Team Management (MerchantUserController)
+        Route::prefix('merchant/users')->group(function () {
+            Route::get('/', [MerchantUserController::class, 'index']);
+            Route::post('/', [MerchantUserController::class, 'store']);
+            Route::get('/{userId}', [MerchantUserController::class, 'show']);
+            Route::put('/{userId}', [MerchantUserController::class, 'update']);
+            Route::delete('/{userId}', [MerchantUserController::class, 'destroy']);
+            Route::post('/{userId}/resend-invite', [MerchantUserController::class, 'resendInvite']);
         });
+
+        // Role & Permission routes (move out of nested prefix)
+        Route::prefix('roles')->group(function () {
+            Route::get('/', [RoleManagementController::class, 'listRoles']);
+            Route::get('/permissions', [RoleManagementController::class, 'listPermissions']);
+        });
+
+        // User role/permission management  
+        Route::prefix('merchant/users/{userId}')->group(function () {
+            Route::get('/roles', [RoleManagementController::class, 'getUserRoles']);
+            Route::post('/roles', [RoleManagementController::class, 'assignRole']);
+            Route::delete('/roles/{roleId}', [RoleManagementController::class, 'removeRole']);
+            Route::get('/permissions', [RoleManagementController::class, 'getUserPermissions']);
+            Route::post('/permissions', [RoleManagementController::class, 'grantPermission']);
+            Route::delete('/permissions/{permissionId}', [RoleManagementController::class, 'revokePermission']);
+        });
+
+        Route::get('merchant/rbac/audit-logs', [RoleManagementController::class, 'getAuditLogs']);
+
 
 
 
@@ -300,6 +314,31 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
         // Supported Banks and Payout Methods
         Route::get('supported-banks', [SupportedBankController::class, 'index']);
         Route::get('supported-payout-methods', [SupportedPayoutMethodController::class, 'index']);
+
+        // Wallet Management
+        Route::prefix('wallets')->group(function () {
+            Route::get('/', [WalletController::class, 'index']);
+            Route::post('/', [WalletController::class, 'store']);
+            Route::post('/transfer', [WalletTransferController::class, 'transfer']);
+
+            Route::prefix('{walletId}')->group(function () {
+                Route::get('/', [WalletController::class, 'show']);
+                Route::patch('/', [WalletController::class, 'update']);
+                Route::get('/balance', [WalletController::class, 'balance']);
+                Route::get('/transactions', [WalletController::class, 'transactions']);
+                Route::post('/freeze', [WalletController::class, 'freeze']);
+                Route::post('/unfreeze', [WalletController::class, 'unfreeze']);
+                Route::post('/sweep', [WalletTransferController::class, 'sweepFromBalance']);
+
+                // Wallet Top-ups
+                Route::prefix('top-ups')->group(function () {
+                    Route::get('/', [WalletTopUpController::class, 'index']);
+                    Route::post('/', [WalletTopUpController::class, 'store']);
+                    Route::get('/{topUpId}', [WalletTopUpController::class, 'show']);
+                    Route::post('/{topUpId}/cancel', [WalletTopUpController::class, 'cancel']);
+                });
+            });
+        });
     });
 
     // Public webhook endpoints (no auth required)
@@ -309,6 +348,16 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
         Route::post('mpesa/b2c/result', [WebhookController::class, 'handleMpesaB2CResult']);
         Route::post('mpesa/b2c/timeout', [WebhookController::class, 'handleMpesaB2CTimeout']);
         Route::post('telebirr', [WebhookController::class, 'handleTelebirr']);
+        Route::post('airtel/collection', [WebhookController::class, 'handleAirtelMoneyCollection']);
+        Route::post('airtel/disbursement', [WebhookController::class, 'handleAirtelMoneyDisbursement']);
+        // MTN MoMo webhooks
+        Route::post('mtn-momo/collection', [WebhookController::class, 'handleMTNMoMoCollection']);
+        Route::post('mtn-momo/disbursement', [WebhookController::class, 'handleMTNMoMoDisbursement']);
+
+        // Wallet Top-up webhooks
+        Route::post('wallet/top-up/{topUpId}', [WebhookController::class, 'handleWalletTopUpCallback']);
+        Route::post('wallet/top-up/bank-transfer', [WebhookController::class, 'handleWalletBankTransferCallback']);
+        Route::post('wallet/top-up/mobile-money/{provider}', [WebhookController::class, 'handleWalletMobileMoneyCallback']);
     });
 
     // Public KYC config endpoints (no auth required - for onboarding)

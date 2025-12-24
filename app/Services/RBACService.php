@@ -7,6 +7,8 @@ use App\Models\Permission;
 use App\Models\RbacAuditLog;
 use App\Models\Role;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class RBACService extends BaseService
@@ -51,11 +53,14 @@ class RBACService extends BaseService
     /**
      * Get all roles for a user
      */
-    public function getUserRoles(MerchantUser $user): \Illuminate\Database\Eloquent\Collection
+    public function getUserRoles(MerchantUser $user)
     {
         return $user->getRolesWithPermissions();
     }
 
+    /**
+     * Assign a role to a user
+     */
     /**
      * Assign a role to a user
      */
@@ -66,26 +71,141 @@ class RBACService extends BaseService
         ?string $ipAddress = null,
         ?string $userAgent = null
     ): void {
-        $roleModel = $role instanceof Role ? $role : Role::findByName($role);
+        // Start transaction for atomic operations
+        DB::beginTransaction();
 
-        if (!$roleModel) {
-            throw new \InvalidArgumentException("Role not found: {$role}");
+        try {
+            // Log role assignment attempt
+            Log::info('Role assignment attempt', [
+                'target_user_id' => $user->id,
+                'target_user_email' => $user->email,
+                'role_input' => $role instanceof Role ? $role->name : $role,
+                'assigned_by_id' => $assignedBy->id,
+                'assigned_by_email' => $assignedBy->email,
+                'ip_address' => $ipAddress,
+                'user_agent' => $userAgent,
+                'timestamp' => now()
+            ]);
+
+            $roleModel = $role instanceof Role ? $role : Role::findByName($role);
+
+            if (!$roleModel) {
+                Log::error('Role assignment failed - role not found', [
+                    'role_input' => $role,
+                    'target_user_id' => $user->id,
+                    'assigned_by_id' => $assignedBy->id
+                ]);
+
+                throw new \InvalidArgumentException("Role not found: {$role}");
+            }
+
+            // Check if already has role
+            if ($user->hasRole($roleModel->name)) {
+                Log::info('Role assignment skipped - user already has role', [
+                    'user_id' => $user->id,
+                    'role_id' => $roleModel->id,
+                    'role_name' => $roleModel->name
+                ]);
+                DB::commit();
+                return;
+            }
+
+            // Log before role attachment
+            Log::info('Attaching role to user', [
+                'user_id' => $user->id,
+                'user_email' => $user->email,
+                'role_id' => $roleModel->id,
+                'role_name' => $roleModel->name,
+                'assigned_by_id' => $assignedBy->id,
+                'assigned_by_email' => $assignedBy->email,
+                'assignment_uuid' => Str::uuid()
+            ]);
+
+            // Attach role
+            $user->roles()->attach($roleModel->id, [
+                'id' => Str::uuid(),
+                'assigned_by' => $assignedBy->id,
+                'assigned_at' => now(),
+            ]);
+
+            // Log successful role attachment
+            Log::info('Role attached successfully', [
+                'user_id' => $user->id,
+                'role_id' => $roleModel->id,
+                'assignment_timestamp' => now()
+            ]);
+
+            // Log the action in audit log
+            Log::info('Creating RBAC audit log entry', [
+                'event_type' => 'role_assigned',
+                'user_id' => $user->id,
+                'role_id' => $roleModel->id
+            ]);
+
+            RbacAuditLog::logRoleAssigned($user, $roleModel, $assignedBy, $ipAddress, $userAgent);
+
+            // Log user's updated permissions
+            $updatedPermissions = $user->getResolvedPermissions();
+            Log::info('User permissions after role assignment', [
+                'user_id' => $user->id,
+                'total_permissions' => count($updatedPermissions),
+                'permissions_sample' => array_slice($updatedPermissions, 0, 10) // Log first 10 permissions
+            ]);
+
+            // Send notification if needed (e.g., email notification for role assignment)
+            $this->notifyRoleAssignment($user, $roleModel, $assignedBy);
+
+            // Commit transaction
+            DB::commit();
+
+            // Log successful completion
+            Log::info('Role assignment completed successfully', [
+                'user_id' => $user->id,
+                'role_name' => $roleModel->name,
+                'assigned_by_id' => $assignedBy->id,
+                'completion_time' => now()
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            DB::rollBack();
+            throw $e; // Re-throw validation errors
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            Log::error('Role assignment failed', [
+                'user_id' => $user->id,
+                'role_input' => $role instanceof Role ? $role->name : $role,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'ip_address' => $ipAddress,
+                'timestamp' => now()
+            ]);
+
+            throw new \RuntimeException("Failed to assign role: " . $e->getMessage(), 0, $e);
         }
+    }
 
-        // Check if already has role
-        if ($user->hasRole($roleModel->name)) {
-            return;
+    /**
+     * Send role assignment notification
+     */
+    protected function notifyRoleAssignment(MerchantUser $user, Role $role, MerchantUser $assignedBy): void
+    {
+        try {
+            Log::info('Sending role assignment notification', [
+                'user_id' => $user->id,
+                'role_name' => $role->name,
+                'assigned_by' => $assignedBy->id
+            ]);
+
+            // Example: Send email notification
+            // Notification::send($user, new RoleAssignedNotification($role, $assignedBy));
+
+        } catch (\Exception $e) {
+            Log::warning('Failed to send role assignment notification', [
+                'error' => $e->getMessage(),
+                'user_id' => $user->id
+            ]);
         }
-
-        // Attach role
-        $user->roles()->attach($roleModel->id, [
-            'id' => Str::uuid(),
-            'assigned_by' => $assignedBy->id,
-            'assigned_at' => now(),
-        ]);
-
-        // Log the action
-        RbacAuditLog::logRoleAssigned($user, $roleModel, $assignedBy, $ipAddress, $userAgent);
     }
 
     /**
@@ -127,8 +247,8 @@ class RBACService extends BaseService
         ?string $ipAddress = null,
         ?string $userAgent = null
     ): void {
-        $permissionModel = $permission instanceof Permission 
-            ? $permission 
+        $permissionModel = $permission instanceof Permission
+            ? $permission
             : Permission::findByName($permission);
 
         if (!$permissionModel) {
@@ -148,11 +268,11 @@ class RBACService extends BaseService
 
         // Log the action
         RbacAuditLog::logPermissionGranted(
-            $user, 
-            $permissionModel, 
-            $grantedBy, 
-            $expiresAt, 
-            $ipAddress, 
+            $user,
+            $permissionModel,
+            $grantedBy,
+            $expiresAt,
+            $ipAddress,
             $userAgent
         );
     }
@@ -167,8 +287,8 @@ class RBACService extends BaseService
         ?string $ipAddress = null,
         ?string $userAgent = null
     ): void {
-        $permissionModel = $permission instanceof Permission 
-            ? $permission 
+        $permissionModel = $permission instanceof Permission
+            ? $permission
             : Permission::findByName($permission);
 
         if (!$permissionModel) {

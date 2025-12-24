@@ -133,7 +133,7 @@ class MerchantKycService extends BaseService
         $filePath = "kyc/{$merchant->merchant_id}/{$documentType}/{$fileName}";
 
         // Store file
-        Storage::disk('private')->put($filePath, file_get_contents($file));
+        Storage::disk('local')->put($filePath, file_get_contents($file));
 
         // Create document record
         $document = MerchantKycDocument::create([

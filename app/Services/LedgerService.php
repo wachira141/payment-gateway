@@ -543,4 +543,283 @@ class LedgerService
             'available_currencies' => $currencies
         ];
     }
+
+    // ==================== WALLET LEDGER ENTRIES ====================
+
+    /**
+     * Record wallet top-up in ledger
+     */
+    public function recordWalletTopUp($topUp, $transaction)
+    {
+        $wallet = $topUp->wallet;
+        $merchant = $wallet->merchant;
+
+        $metadata = [
+            'top_up_id' => $topUp->top_up_id,
+            'wallet_id' => $wallet->wallet_id,
+            'method' => $topUp->method,
+            'gateway_type' => $topUp->gateway_type,
+            'gateway_reference' => $topUp->gateway_reference,
+        ];
+
+        DB::transaction(function () use ($merchant, $topUp, $wallet, $transaction, $metadata) {
+            LedgerEntry::createTransaction(
+                $merchant->id,
+                $topUp,
+                [
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'debit',
+                        'amount' => $topUp->amount,
+                        'currency' => $topUp->currency,
+                        'description' => "Wallet top-up via {$topUp->method} - {$topUp->top_up_id}",
+                        'metadata' => $metadata,
+                    ],
+                    [
+                        'account_type' => 'liabilities',
+                        'account_name' => 'wallet_funds_payable',
+                        'entry_type' => 'credit',
+                        'amount' => $topUp->amount,
+                        'currency' => $topUp->currency,
+                        'description' => "Wallet funds received - {$topUp->top_up_id}",
+                        'metadata' => $metadata,
+                    ],
+                ]
+            );
+        });
+    }
+
+    /**
+     * Record wallet disbursement in ledger
+     */
+    public function recordWalletDisbursement($transaction, $disbursement = null)
+    {
+        $wallet = $transaction->wallet;
+        $merchant = $wallet->merchant;
+
+        $metadata = [
+            'transaction_id' => $transaction->transaction_id,
+            'wallet_id' => $wallet->wallet_id,
+            'disbursement_id' => $disbursement?->disbursement_id ?? null,
+        ];
+
+        DB::transaction(function () use ($merchant, $transaction, $wallet, $metadata) {
+            LedgerEntry::createTransaction(
+                $merchant->id,
+                $transaction,
+                [
+                    [
+                        'account_type' => 'liabilities',
+                        'account_name' => 'wallet_funds_payable',
+                        'entry_type' => 'debit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Wallet disbursement - {$transaction->transaction_id}",
+                        'metadata' => $metadata,
+                    ],
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'credit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Wallet balance debited - {$transaction->transaction_id}",
+                        'metadata' => $metadata,
+                    ],
+                ]
+            );
+        });
+    }
+
+    /**
+     * Record wallet-to-wallet transfer in ledger
+     */
+    public function recordWalletTransfer($debitTransaction, $creditTransaction)
+    {
+        $fromWallet = $debitTransaction->wallet;
+        $toWallet = $creditTransaction->wallet;
+        $merchant = $fromWallet->merchant;
+
+        $metadata = [
+            'from_wallet_id' => $fromWallet->wallet_id,
+            'to_wallet_id' => $toWallet->wallet_id,
+            'debit_transaction_id' => $debitTransaction->transaction_id,
+            'credit_transaction_id' => $creditTransaction->transaction_id,
+            'reference' => $debitTransaction->reference,
+        ];
+
+        DB::transaction(function () use ($merchant, $debitTransaction, $creditTransaction, $metadata) {
+            // Record the transfer as internal movement (no external liability change)
+            LedgerEntry::createTransaction(
+                $merchant->id,
+                $debitTransaction,
+                [
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'credit',
+                        'amount' => $debitTransaction->amount,
+                        'currency' => $debitTransaction->currency,
+                        'description' => "Transfer out to wallet - {$debitTransaction->reference}",
+                        'metadata' => array_merge($metadata, ['direction' => 'out']),
+                    ],
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'debit',
+                        'amount' => $creditTransaction->amount,
+                        'currency' => $creditTransaction->currency,
+                        'description' => "Transfer in from wallet - {$creditTransaction->reference}",
+                        'metadata' => array_merge($metadata, ['direction' => 'in']),
+                    ],
+                ]
+            );
+        });
+    }
+
+    /**
+     * Record balance sweep to wallet in ledger
+     */
+    public function recordBalanceSweepToWallet($transaction, $merchantBalance)
+    {
+        $wallet = $transaction->wallet;
+        $merchant = $wallet->merchant;
+
+        $metadata = [
+            'transaction_id' => $transaction->transaction_id,
+            'wallet_id' => $wallet->wallet_id,
+            'source' => 'merchant_balance',
+            'reference' => $transaction->reference,
+        ];
+
+        DB::transaction(function () use ($merchant, $transaction, $merchantBalance, $metadata) {
+            LedgerEntry::createTransaction(
+                $merchant->id,
+                $transaction,
+                [
+                    // Debit from merchant balance (reduce available)
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'merchant_balance_available',
+                        'entry_type' => 'credit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Sweep to wallet - {$transaction->reference}",
+                        'metadata' => $metadata,
+                    ],
+                    // Credit to wallet balance
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'debit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Sweep from merchant balance - {$transaction->reference}",
+                        'metadata' => $metadata,
+                    ],
+                ]
+            );
+        });
+    }
+
+    /**
+     * Record wallet hold in ledger
+     */
+    public function recordWalletHold($transaction)
+    {
+        $wallet = $transaction->wallet;
+        $merchant = $wallet->merchant;
+
+        $metadata = [
+            'transaction_id' => $transaction->transaction_id,
+            'wallet_id' => $wallet->wallet_id,
+            'reference' => $transaction->reference,
+        ];
+
+        DB::transaction(function () use ($merchant, $transaction, $metadata) {
+            LedgerEntry::createTransaction(
+                $merchant->id,
+                $transaction,
+                [
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'credit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Funds held - {$transaction->transaction_id}",
+                        'metadata' => $metadata,
+                    ],
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance_held',
+                        'entry_type' => 'debit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Funds on hold - {$transaction->transaction_id}",
+                        'metadata' => $metadata,
+                    ],
+                ]
+            );
+        });
+    }
+
+    /**
+     * Record wallet release in ledger
+     */
+    public function recordWalletRelease($transaction)
+    {
+        $wallet = $transaction->wallet;
+        $merchant = $wallet->merchant;
+
+        $metadata = [
+            'transaction_id' => $transaction->transaction_id,
+            'wallet_id' => $wallet->wallet_id,
+            'reference' => $transaction->reference,
+        ];
+
+        DB::transaction(function () use ($merchant, $transaction, $metadata) {
+            LedgerEntry::createTransaction(
+                $merchant->id,
+                $transaction,
+                [
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance_held',
+                        'entry_type' => 'credit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Funds released - {$transaction->transaction_id}",
+                        'metadata' => $metadata,
+                    ],
+                    [
+                        'account_type' => 'assets',
+                        'account_name' => 'wallet_balance',
+                        'entry_type' => 'debit',
+                        'amount' => $transaction->amount,
+                        'currency' => $transaction->currency,
+                        'description' => "Funds available - {$transaction->transaction_id}",
+                        'metadata' => $metadata,
+                    ],
+                ]
+            );
+        });
+    }
+
+    /**
+     * Get wallet balance from ledger
+     */
+    public function getWalletLedgerBalance($merchantId, $currency = null)
+    {
+        $walletBalance = $this->getAccountBalance($merchantId, 'assets', 'wallet_balance', $currency);
+        $heldBalance = $this->getAccountBalance($merchantId, 'assets', 'wallet_balance_held', $currency);
+
+        return [
+            'available' => $walletBalance - $heldBalance,
+            'held' => $heldBalance,
+            'total' => $walletBalance,
+            'currency' => $currency,
+        ];
+    }
 }

@@ -13,6 +13,7 @@ use App\Services\GatewayPricingService;
 use App\Services\PaymentIntentService;
 use App\Services\WebhookEventService;
 use Illuminate\Http\Request;
+use App\Services\WalletTopUpService;
 use Illuminate\Http\JsonResponse;
 
 use Illuminate\Support\Facades\Log;
@@ -27,6 +28,7 @@ class WebhookController extends Controller
     protected $paymentIntentService;
     protected $webhookEventService;
     protected $goalRequestService;
+    protected $walletTopUpService;
     protected $paymentProcessor;
     protected $mealPlanService;
     protected $bookingService;
@@ -40,12 +42,14 @@ class WebhookController extends Controller
         PaymentIntentService $paymentIntentService,
         PaymentProcessorService $paymentProcessor,
         WebhookEventService $webhookEventService,
+        WalletTopUpService $walletTopUpService,
     ) {
         $this->commissionCalculationService = $commissionCalculationService;
         $this->webhookProcessingService = $webhookProcessingService;
         $this->gatewayPricingService = $gatewayPricingService;
         $this->paymentIntentService = $paymentIntentService;
         $this->webhookEventService = $webhookEventService;
+        $this->walletTopUpService = $walletTopUpService;
         $this->paymentProcessor = $paymentProcessor;
     }
 
@@ -90,6 +94,39 @@ class WebhookController extends Controller
     }
 
     /**
+     * Handle Airtel Money C2B (collection) webhooks
+     */
+    public function handleAirtelMoneyCollection(Request $request)
+    {
+        return $this->processWebhook($request, 'airtel_money', 'c2b');
+    }
+
+    /**
+     * Handle Airtel Money B2C (disbursement) webhooks
+     */
+    public function handleAirtelMoneyDisbursement(Request $request)
+    {
+        return $this->processWebhook($request, 'airtel_money', 'b2c');
+    }
+
+    /**
+     * Handle MTN MoMo Collection (C2B) webhooks
+     */
+    public function handleMTNMoMoCollection(Request $request)
+    {
+        return $this->processWebhook($request, 'mtn_momo', 'c2b');
+    }
+
+    /**
+     * Handle MTN MoMo Disbursement (B2C) webhooks
+     */
+    public function handleMTNMoMoDisbursement(Request $request)
+    {
+        return $this->processWebhook($request, 'mtn_momo', 'b2c');
+    }
+
+
+    /**
      * Process webhook from any gateway
      */
     private function processWebhook(Request $request, string $gatewayType, string | null  $eventType = null)
@@ -107,7 +144,7 @@ class WebhookController extends Controller
 
             $appId = $paymentIntent ? $paymentIntent->merchant_app_id : null;
 
-            Log::info("Extracted app ID from webhook: " . ($paymentIntent-> gateway_data['transaction_id'] ?: 'null'));
+            Log::info("Extracted app ID from webhook: " . ($paymentIntent->gateway_data['transaction_id'] ?: 'null'));
 
             $webhook = PaymentWebhook::create([
                 'payment_gateway_id' => $gateway->id,
@@ -116,7 +153,7 @@ class WebhookController extends Controller
                 'event_type' => $eventType ?: $this->determineEventType($request, $gatewayType),
                 'gateway_event_id' => $this->extractEventId($request, $gatewayType),
                 'payment_intent_id' => $paymentIntent ? $paymentIntent->id : null,
-                'payment_transaction_id' =>$paymentIntent ? $paymentIntent-> gateway_data['transaction_id'] ?? null : null,
+                'payment_transaction_id' => $paymentIntent ? $paymentIntent->gateway_data['transaction_id'] ?? null : null,
                 'payload' => $request->all(),
                 'status' => 'pending',
             ]);
@@ -135,6 +172,33 @@ class WebhookController extends Controller
                     $webhook->markFailed($result['error']);
                     Log::error("B2C webhook processing failed: " . $result['error']);
                     return response()->json(['ResultCode' => 1, 'ResultDesc' => 'Failed']);
+                }
+            }
+
+            // For Airtel Money B2C webhooks, process immediately
+            if ($gatewayType === 'airtel_money' && $eventType === 'b2c') {
+                $result = $this->webhookProcessingService->processWebhook($webhook);
+
+                if ($result['success']) {
+                    $webhook->markProcessed();
+                    return response()->json(['status' => 'success', 'message' => 'Callback received']);
+                } else {
+                    $webhook->markFailed($result['error']);
+                    Log::error("Airtel Money B2C webhook processing failed: " . $result['error']);
+                    return response()->json(['status' => 'error', 'message' => 'Processing failed'], 500);
+                }
+            }
+            // For MTN MoMo B2C webhooks, process immediately
+            if ($gatewayType === 'mtn_momo' && $eventType === 'b2c') {
+                $result = $this->webhookProcessingService->processWebhook($webhook);
+
+                if ($result['success']) {
+                    $webhook->markProcessed();
+                    return response()->json(['status' => 'success', 'message' => 'Callback received']);
+                } else {
+                    $webhook->markFailed($result['error']);
+                    Log::error("MTN MoMo B2C webhook processing failed: " . $result['error']);
+                    return response()->json(['status' => 'error', 'message' => 'Processing failed'], 500);
                 }
             }
 
@@ -207,6 +271,27 @@ class WebhookController extends Controller
             case 'telebirr':
                 $telebirrEventType = $request->header('X-Event-Type', 'unknown');
                 return $gatewayMappings[$telebirrEventType] ?? $telebirrEventType;
+            case 'airtel_money':
+                // Check transaction status from Airtel Money callback
+                $statusCode = $request->input('transaction.status_code', $request->input('status_code'));
+                $airtelEventMappings = [
+                    'TS' => 'payment_intent.succeeded',
+                    'TF' => 'payment_intent.failed',
+                    'TIP' => 'payment_intent.processing',
+                    'TA' => 'payment_intent.cancelled',
+                ];
+                return $airtelEventMappings[$statusCode] ?? ($gatewayMappings[$statusCode] ?? 'unknown');
+            case 'mtn_momo':
+                // MTN MoMo uses status field
+                $status = $request->input('status', $request->input('financialTransactionId') ? 'SUCCESSFUL' : 'unknown');
+                $mtnEventMappings = [
+                    'SUCCESSFUL' => 'payment_intent.succeeded',
+                    'FAILED' => 'payment_intent.failed',
+                    'PENDING' => 'payment_intent.processing',
+                    'REJECTED' => 'payment_intent.cancelled',
+                    'TIMEOUT' => 'payment_intent.failed',
+                ];
+                return $mtnEventMappings[$status] ?? ($gatewayMappings[$status] ?? 'unknown');
             default:
                 return 'unknown';
         }
@@ -230,6 +315,12 @@ class WebhookController extends Controller
                 return $request->input('Body.stkCallback.CheckoutRequestID');
             case 'telebirr':
                 return $request->input('orderId');
+            case 'airtel_money':
+                // Airtel Money transaction ID
+                return $request->input('transaction.id', $request->input('transaction_id'));
+            case 'mtn_momo':
+                // MTN MoMo uses externalId or referenceId
+                return $request->input('externalId', $request->input('referenceId'));
             default:
                 return null;
         }
@@ -478,6 +569,8 @@ class WebhookController extends Controller
             'stripe' => ['gateway_code' => 'stripe', 'payment_method_type' => 'card'],
             'mpesa' => ['gateway_code' => 'mpesa', 'payment_method_type' => 'mobile_money'],
             'telebirr' => ['gateway_code' => 'telebirr', 'payment_method_type' => 'mobile_money'],
+            'airtel_money' => ['gateway_code' => 'airtel_money', 'payment_method_type' => 'mobile_money'],
+            'mtn_momo' => ['gateway_code' => 'mtn_momo', 'payment_method_type' => 'mobile_money'],
         ];
 
         $mapping = $gatewayMapping[$gatewayType] ?? [
@@ -529,6 +622,35 @@ class WebhookController extends Controller
                         return $paymentIntent;
                     }
                 }
+                // For Airtel Money, try to find by transaction ID or reference
+                if ($gatewayType === 'airtel_money') {
+                    $transactionId = $request->input('transaction.id', $request->input('transaction_id'));
+                    $reference = $request->input('transaction.airtel_money_id', $request->input('reference'));
+
+                    $paymentIntent = \App\Models\PaymentIntent::where('gateway_data->transaction_id', $transactionId)
+                        ->orWhere('gateway_data->airtel_reference', $reference)
+                        ->orWhere('intent_id', $transactionId)
+                        ->first();
+
+                    if ($paymentIntent) {
+                        return $paymentIntent;
+                    }
+                }
+
+                // For MTN MoMo, try to find by reference ID or external ID
+                if ($gatewayType === 'mtn_momo') {
+                    $referenceId = $request->input('referenceId', $request->input('externalId'));
+                    $externalId = $request->input('externalId');
+
+                    $paymentIntent = \App\Models\PaymentIntent::where('gateway_data->reference_id', $referenceId)
+                        ->orWhere('gateway_data->external_id', $externalId)
+                        ->orWhere('intent_id', $externalId)
+                        ->first();
+
+                    if ($paymentIntent) {
+                        return $paymentIntent;
+                    }
+                }
             }
 
             return null;
@@ -539,6 +661,248 @@ class WebhookController extends Controller
                 'error' => $e->getMessage()
             ]);
             return null;
+        }
+    }
+
+
+    // ==================== WALLET TOP-UP WEBHOOKS ====================
+
+    /**
+     * Handle generic wallet top-up callback
+     */
+    public function handleWalletTopUpCallback(Request $request, string $topUpId): JsonResponse
+    {
+        Log::info('Wallet top-up callback received', [
+            'top_up_id' => $topUpId,
+            'payload' => $request->all(),
+        ]);
+
+        try {
+            $topUp = $this->walletTopUpService->processTopUpCallback($topUpId, [
+                'success' => $request->input('success', false),
+                'gateway_reference' => $request->input('gateway_reference') ?? $request->input('transaction_id'),
+                'gateway_response' => $request->all(),
+                'failure_reason' => $request->input('failure_reason') ?? $request->input('error_message'),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'status' => $topUp->status,
+                'message' => $topUp->status === 'completed' ? 'Top-up processed successfully' : 'Top-up processing failed',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Wallet top-up callback processing failed', [
+                'top_up_id' => $topUpId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
+        }
+    }
+
+    /**
+     * Handle bank transfer confirmation callback
+     */
+    public function handleWalletBankTransferCallback(Request $request): JsonResponse
+    {
+        Log::info('Wallet bank transfer callback received', [
+            'payload' => $request->all(),
+        ]);
+
+        $bankReference = $request->input('bank_reference') ?? $request->input('reference');
+
+        if (!$bankReference) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Bank reference is required',
+            ], 400);
+        }
+
+        try {
+            // Find top-up by bank reference
+            $topUp = \App\Models\WalletTopUp::where('bank_reference', $bankReference)
+                ->where('status', 'pending')
+                ->first();
+
+            if (!$topUp) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Top-up not found or already processed',
+                ], 404);
+            }
+
+            $topUp = $this->walletTopUpService->processTopUpCallback($topUp->top_up_id, [
+                'success' => $request->input('success', true),
+                'gateway_reference' => $bankReference,
+                'gateway_response' => $request->all(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'status' => $topUp->status,
+                'message' => 'Bank transfer processed',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Bank transfer callback processing failed', [
+                'bank_reference' => $bankReference,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
+        }
+    }
+
+    /**
+     * Handle mobile money top-up callback
+     */
+    public function handleWalletMobileMoneyCallback(Request $request, string $provider): JsonResponse
+    {
+        Log::info('Wallet mobile money callback received', [
+            'provider' => $provider,
+            'payload' => $request->all(),
+        ]);
+
+        // Parse callback based on provider
+        $callbackData = $this->parseMobileMoneyCallback($request, $provider);
+
+        if (!$callbackData['top_up_id']) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not identify top-up from callback',
+            ], 400);
+        }
+
+        try {
+            $topUp = $this->walletTopUpService->processTopUpCallback(
+                $callbackData['top_up_id'],
+                $callbackData
+            );
+
+            // Return provider-specific response
+            return $this->formatMobileMoneyResponse($provider, $topUp);
+        } catch (\Exception $e) {
+            Log::error('Mobile money callback processing failed', [
+                'provider' => $provider,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->formatMobileMoneyErrorResponse($provider, $e->getMessage());
+        }
+    }
+
+    /**
+     * Parse mobile money callback based on provider
+     */
+    protected function parseMobileMoneyCallback(Request $request, string $provider): array
+    {
+        switch ($provider) {
+            case 'mpesa':
+                $resultCode = $request->input('Body.stkCallback.ResultCode', $request->input('ResultCode'));
+                $checkoutRequestId = $request->input('Body.stkCallback.CheckoutRequestID', $request->input('CheckoutRequestID'));
+
+                // Find top-up by gateway reference
+                $topUp = \App\Models\WalletTopUp::where('gateway_reference', $checkoutRequestId)
+                    ->orWhereJsonContains('metadata->checkout_request_id', $checkoutRequestId)
+                    ->first();
+
+                return [
+                    'top_up_id' => $topUp?->top_up_id,
+                    'success' => $resultCode === 0 || $resultCode === '0',
+                    'gateway_reference' => $checkoutRequestId,
+                    'gateway_response' => $request->all(),
+                    'failure_reason' => $resultCode !== 0 ? ($request->input('Body.stkCallback.ResultDesc') ?? 'Payment failed') : null,
+                ];
+
+            case 'mtn':
+                $status = $request->input('status');
+                $externalId = $request->input('externalId');
+
+                $topUp = \App\Models\WalletTopUp::where('gateway_reference', $externalId)
+                    ->orWhereJsonContains('metadata->external_id', $externalId)
+                    ->first();
+
+                return [
+                    'top_up_id' => $topUp?->top_up_id,
+                    'success' => strtoupper($status) === 'SUCCESSFUL',
+                    'gateway_reference' => $request->input('financialTransactionId') ?? $externalId,
+                    'gateway_response' => $request->all(),
+                    'failure_reason' => strtoupper($status) !== 'SUCCESSFUL' ? ($request->input('reason') ?? 'Payment failed') : null,
+                ];
+
+            case 'airtel':
+                $statusCode = $request->input('transaction.status_code', $request->input('status_code'));
+                $transactionId = $request->input('transaction.id', $request->input('transaction_id'));
+
+                $topUp = \App\Models\WalletTopUp::where('gateway_reference', $transactionId)
+                    ->first();
+
+                return [
+                    'top_up_id' => $topUp?->top_up_id,
+                    'success' => $statusCode === 'TS',
+                    'gateway_reference' => $transactionId,
+                    'gateway_response' => $request->all(),
+                    'failure_reason' => $statusCode !== 'TS' ? ($request->input('transaction.message') ?? 'Payment failed') : null,
+                ];
+
+            default:
+                return [
+                    'top_up_id' => $request->input('top_up_id'),
+                    'success' => $request->input('success', false),
+                    'gateway_reference' => $request->input('reference'),
+                    'gateway_response' => $request->all(),
+                    'failure_reason' => $request->input('error'),
+                ];
+        }
+    }
+
+    /**
+     * Format mobile money success response based on provider
+     */
+    protected function formatMobileMoneyResponse(string $provider, $topUp): JsonResponse
+    {
+        switch ($provider) {
+            case 'mpesa':
+                return response()->json([
+                    'ResultCode' => 0,
+                    'ResultDesc' => 'Success',
+                ]);
+
+            case 'mtn':
+            case 'airtel':
+            default:
+                return response()->json([
+                    'success' => true,
+                    'status' => $topUp->status,
+                    'message' => 'Callback processed',
+                ]);
+        }
+    }
+
+    /**
+     * Format mobile money error response based on provider
+     */
+    protected function formatMobileMoneyErrorResponse(string $provider, string $message): JsonResponse
+    {
+        switch ($provider) {
+            case 'mpesa':
+                return response()->json([
+                    'ResultCode' => 1,
+                    'ResultDesc' => $message,
+                ]);
+
+            case 'mtn':
+            case 'airtel':
+            default:
+                return response()->json([
+                    'success' => false,
+                    'message' => $message,
+                ], 400);
         }
     }
 }

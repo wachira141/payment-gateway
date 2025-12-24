@@ -48,9 +48,9 @@ class ApplicationDataService
      */
     public function getCountriesAndCurrencies()
     {
-        return Cache::remember('countries_and_currencies', now()->addDay(), function () {
-            return Country::all();
-        });
+        return Country::all();
+        // return Cache::remember('countries_and_currencies', now()->addDay(), function () {
+        // });
     }
 
     /**

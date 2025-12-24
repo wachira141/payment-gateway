@@ -19,15 +19,15 @@ class PaymentMethodGatewayMapper
         array $metadata = []
     ): ?PaymentGateway {
         
-        $gatewayType = $this->mapPaymentMethodToGatewayType($paymentMethodType, $countryCode);
+        // $gatewayType = $this->mapPaymentMethodToGatewayType($paymentMethodType, $countryCode);
         
-        if (!$gatewayType) {
-            return null;
-        }
+        // if (!$gatewayType) {
+        //     return null;
+        // }
 
         // Get the best gateway for the type, country, and currency
         return PaymentGateway::active()
-            ->where('type', $gatewayType)
+            ->where('type', $paymentMethodType)
             ->byCountry($countryCode)
             ->byCurrency($currency)
             ->orderBy('priority', 'desc')

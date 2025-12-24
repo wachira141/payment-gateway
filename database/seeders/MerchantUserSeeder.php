@@ -6,6 +6,7 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Carbon\Carbon;
+use App\Models\MerchantUser;
 
 class MerchantUserSeeder extends Seeder
 {
@@ -89,23 +90,18 @@ class MerchantUserSeeder extends Seeder
             }
 
             foreach ($users as $user) {
-                DB::table('merchant_users')->updateOrInsert(
-                    // UNIQUE KEY
+                MerchantUser::updateOrCreate(
                     ['email' => $user['email']],
-
-                    // VALUES TO UPDATE / INSERT
                     [
                         'merchant_id'   => $merchant->id,
                         'name'          => $user['name'],
                         'password'      => Hash::make('password123'),
                         'role'          => $user['role'],
                         'status'        => $user['status'],
-                        'permissions'   => json_encode($user['permissions']),
+                        'permissions'   => $user['permissions'], // Model will cast to JSON
                         'phone'         => $user['phone'],
-                        'metadata'      => json_encode($user['metadata']),
+                        'metadata'      => $user['metadata'], // Model will cast to JSON
                         'last_login_at' => $user['last_login_at'],
-                        'updated_at'    => now(),
-                        'created_at'    => now(),
                     ]
                 );
             }

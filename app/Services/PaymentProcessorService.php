@@ -8,6 +8,8 @@ use App\Models\PaymentWebhook;
 use App\Services\StripePaymentService;
 use App\Services\MpesaPaymentService;
 use App\Services\TelebirrPaymentService;
+use App\Services\AirtelMoneyPaymentService;
+use App\Services\MTNMobileMoneyPaymentService;
 use App\Helpers\CurrencyHelper;
 use App\Services\PaymentIntentTransactionService;
 use App\Services\CustomerResolutionService;
@@ -21,6 +23,8 @@ class PaymentProcessorService
     protected $stripeService;
     protected $mpesaService;
     protected $telebirrService;
+    protected $airtelMoneyService;
+    protected $mtnMoMoService;
     protected $applicationDataService;
     protected $customerResolver;
 
@@ -29,12 +33,16 @@ class PaymentProcessorService
         StripePaymentService $stripeService,
         MpesaPaymentService $mpesaService,
         TelebirrPaymentService $telebirrService,
+        AirtelMoneyPaymentService $airtelMoneyService,
+        MTNMobileMoneyPaymentService $mtnMoMoService,
         CustomerResolutionService $customerResolver
     ) {
         $this->applicationDataService = $applicationDataService;
         $this->stripeService = $stripeService;
         $this->mpesaService = $mpesaService;
         $this->telebirrService = $telebirrService;
+        $this->airtelMoneyService = $airtelMoneyService;
+        $this->mtnMoMoService = $mtnMoMoService;
         $this->customerResolver = $customerResolver;
     }
     /**
@@ -66,7 +74,7 @@ class PaymentProcessorService
             // Resolve customer information from payment data
             $customerId = $this->resolveCustomerForPayment($data);
 
-            
+
             // Create transaction record
             $transaction = PaymentTransaction::createTransaction([
                 'transaction_id' => Str::uuid(),
@@ -80,7 +88,7 @@ class PaymentProcessorService
                 'description' => $data['description'] ?? null,
                 'metadata' => $data['metadata'] ?? [],
             ]);
-            
+
             $data['amount'] = CurrencyHelper::fromMinorUnits($data['amount'], $data['currency']);
             // Process payment based on gateway type
             $result = $this->processPaymentByGateway($gateway, $transaction, $data);
@@ -133,6 +141,10 @@ class PaymentProcessorService
                 return $this->processMpesaPayment($transaction, $data);
             case 'telebirr':
                 return $this->processTelebirrPayment($transaction, $data);
+            case 'airtel_money':
+                return $this->processAirtelMoneyPayment($transaction, $data);
+            case 'mtn_momo':
+                return $this->processMTNMoMoPayment($transaction, $data);
             default:
                 return [
                     'success' => false,
@@ -238,6 +250,64 @@ class PaymentProcessorService
     }
 
     /**
+     * Process Airtel Money payment
+     */
+    private function processAirtelMoneyPayment($transaction, $data)
+    {
+        try {
+            $result = $this->airtelMoneyService->initiatePayment(
+                $data['amount'],
+                $data['phone_number'],
+                $transaction->transaction_id,
+                $data['country_code'] ?? null,
+                $data['currency'] ?? null
+            );
+
+            return [
+                'success' => $result['success'],
+                'error' => $result['error'] ?? null,
+                'gateway_response' => $result,
+                'transaction_id' => $result['transaction_id'] ?? null,
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Process MTN MoMo payment
+     */
+    private function processMTNMoMoPayment($transaction, $data)
+    {
+        try {
+            $result = $this->mtnMoMoService->requestToPay(
+                $data['amount'],
+                $data['phone_number'],
+                $transaction->transaction_id,
+                $data['country_code'] ?? null,
+                $data['currency'] ?? null,
+                $data['payer_message'] ?? null,
+                $data['payee_note'] ?? null
+            );
+
+            return [
+                'success' => $result['success'],
+                'error' => $result['error'] ?? null,
+                'gateway_response' => $result,
+                'reference_id' => $result['reference_id'] ?? null,
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
      * Retry a failed payment
      */
     public function retryPayment(PaymentTransaction $transaction)
@@ -280,6 +350,10 @@ class PaymentProcessorService
                     return $this->processMpesaWebhook($webhook);
                 case 'telebirr':
                     return $this->processTelebirrWebhook($webhook);
+                case 'airtel_money':
+                    return $this->processAirtelMoneyWebhook($webhook);
+                case 'mtn_momo':
+                    return $this->processMTNMoMoWebhook($webhook);
                 default:
                     return [
                         'success' => false,
@@ -368,6 +442,77 @@ class PaymentProcessorService
         }
 
         return ['success' => true];
+    }
+
+    /**
+     * Process Airtel Money webhook
+     */
+    private function processAirtelMoneyWebhook($webhook)
+    {
+        $payload = $webhook->payload;
+        $callbackData = $this->airtelMoneyService->processC2BCallback($payload);
+
+        if (!$callbackData['success']) {
+            return ['success' => false, 'error' => $callbackData['error'] ?? 'Failed to process callback'];
+        }
+
+        $data = $callbackData['data'];
+        $transactionId = $data['transaction_id'] ?? null;
+
+        if ($transactionId) {
+            $transaction = PaymentTransaction::where('transaction_id', $transactionId)
+                ->orWhere('gateway_response->transaction_id', $transactionId)
+                ->first();
+
+            if ($transaction) {
+                if ($data['status'] === 'TS') {
+                    $transaction->markAsCompleted($data['airtel_reference'] ?? null);
+                } else {
+                    $transaction->markAsFailed($data['status_message'] ?? 'Payment failed');
+                }
+
+                // Sync with PaymentIntent if linked
+                app(PaymentIntentTransactionService::class)->syncIntentStatusFromTransaction($transaction);
+            }
+        }
+
+        return ['success' => true, 'transaction' => $transaction ?? null];
+    }
+
+    /**
+     * Process MTN MoMo webhook
+     */
+    private function processMTNMoMoWebhook($webhook)
+    {
+        $payload = $webhook->payload;
+        $callbackData = $this->mtnMoMoService->processCollectionCallback($payload);
+
+        if (!$callbackData['success']) {
+            return ['success' => false, 'error' => $callbackData['error'] ?? 'Failed to process callback'];
+        }
+
+        $data = $callbackData['data'];
+        $externalId = $data['external_id'] ?? $data['reference_id'] ?? null;
+
+        if ($externalId) {
+            $transaction = PaymentTransaction::where('transaction_id', $externalId)
+                ->orWhere('gateway_response->reference_id', $data['reference_id'])
+                ->orWhere('gateway_response->external_id', $externalId)
+                ->first();
+
+            if ($transaction) {
+                if ($data['normalized_status'] === 'completed') {
+                    $transaction->markAsCompleted($data['financial_transaction_id'] ?? null);
+                } else {
+                    $transaction->markAsFailed($data['reason'] ?? 'Payment failed');
+                }
+
+                // Sync with PaymentIntent if linked
+                app(PaymentIntentTransactionService::class)->syncIntentStatusFromTransaction($transaction);
+            }
+        }
+
+        return ['success' => true, 'transaction' => $transaction ?? null];
     }
 
     /**

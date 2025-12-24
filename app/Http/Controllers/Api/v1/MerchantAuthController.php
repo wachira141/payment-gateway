@@ -4,8 +4,11 @@ namespace App\Http\Controllers\Api\v1;
 
 use App\Models\Merchant;
 use App\Models\MerchantUser;
+use App\Models\Role;
+use App\Services\RBACService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -56,8 +59,25 @@ class MerchantAuthController
     /**
      * Register a new merchant
      */
-    public function register(Request $request)
-    {
+   /**
+ * Register a new merchant
+ */
+public function register(Request $request)
+{
+    // Start transaction for atomic operations
+    DB::beginTransaction();
+
+    try {
+        // Log registration attempt
+        Log::info('Merchant registration attempt', [
+            'email' => $request->email,
+            'display_name' => $request->display_name,
+            'business_type' => $request->business_type,
+            'country_code' => $request->country_code,
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent()
+        ]);
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:merchant_users',
@@ -68,7 +88,24 @@ class MerchantAuthController
             'country_code' => 'required|string|max:2',
         ]);
 
+        // Log validation passed
+        Log::info('Merchant registration validation passed', [
+            'email' => $request->email,
+            'legal_name' => $request->legal_name,
+            'display_name' => $request->display_name
+        ]);
+
         // Create merchant first
+        $currency = $this->getCurrencyByCountry($request->country_code);
+        
+        Log::info('Creating merchant record', [
+            'legal_name' => $request->legal_name,
+            'display_name' => $request->display_name,
+            'business_type' => $request->business_type,
+            'country_code' => $request->country_code,
+            'currency' => $currency
+        ]);
+
         $merchant = Merchant::createWithDefaults([
             'legal_name' => $request->legal_name,
             'display_name' => $request->display_name,
@@ -78,30 +115,110 @@ class MerchantAuthController
             'business_type' => $request->business_type,
             'country' => $request->country_code,
             'country_code' => $request->country_code,
-            'default_currency' => $this->getCurrencyByCountry($request->country_code),
-            'currency' => $this->getCurrencyByCountry($request->country_code),
+            'default_currency' => $currency,
+            'currency' => $currency,
             'status' => 'active',
             'compliance_status' => 'pending',
             'kyc_tier' => 0,
             'kyc_status' => 'pending',
         ]);
 
-        // Create merchant user
+        Log::info('Merchant created successfully', [
+            'merchant_id' => $merchant->id,
+            'legal_name' => $merchant->legal_name,
+            'display_name' => $merchant->display_name,
+            'status' => $merchant->status
+        ]);
+
+        // Create merchant user with is_primary flag
+        Log::info('Creating primary merchant user', [
+            'merchant_id' => $merchant->id,
+            'user_name' => $request->name,
+            'user_email' => $request->email,
+            'is_primary' => true
+        ]);
+
         $merchantUser = MerchantUser::create([
             'merchant_id' => $merchant->id,
             'name' => $request->name,
             'email' => $request->email,
             'password' => Hash::make($request->password),
-            'role' => 'owner',
+            'is_primary' => true,  // First user is primary admin
             'status' => 'active',
         ]);
 
+        Log::info('Merchant user created successfully', [
+            'user_id' => $merchantUser->id,
+            'merchant_id' => $merchantUser->merchant_id,
+            'email' => $merchantUser->email,
+            'is_primary' => $merchantUser->is_primary
+        ]);
+
+        // Assign admin role from RBAC tables
+        $adminRole = Role::where('name', 'admin')->first();
+        
+        if ($adminRole) {
+            Log::info('Assigning admin role to primary user', [
+                'user_id' => $merchantUser->id,
+                'role_id' => $adminRole->id,
+                'role_name' => $adminRole->name,
+                'assigned_by' => 'system' // System auto-assignment
+            ]);
+
+            $rbacService = app(RBACService::class);
+            $rbacService->assignRole(
+                $merchantUser,
+                $adminRole,
+                $merchantUser, // Self-assigned by system
+                $request->ip(),
+                $request->userAgent()
+            );
+            
+            Log::info('Admin role assigned successfully', [
+                'user_id' => $merchantUser->id,
+                'role_name' => $adminRole->name
+            ]);
+        } else {
+            Log::warning('Admin role not found during registration', [
+                'merchant_id' => $merchant->id,
+                'user_id' => $merchantUser->id
+            ]);
+        }
+
         // Update last login
+        Log::info('Updating last login timestamp for new user', [
+            'user_id' => $merchantUser->id
+        ]);
+        
         $merchantUser->updateLastLogin();
 
-
         // Create Passport token
+        Log::info('Creating OAuth token for merchant user', [
+            'user_id' => $merchantUser->id,
+            'token_name' => 'merchant-dashboard'
+        ]);
+        
         $tokenResult = $merchantUser->createToken('merchant-dashboard');
+
+        Log::info('OAuth token created', [
+            'user_id' => $merchantUser->id,
+            'token_id' => $tokenResult->token->id,
+            'expires_at' => $tokenResult->token->expires_at
+        ]);
+
+        // Commit transaction
+        DB::commit();
+
+        // Log successful registration
+        Log::info('Merchant registration completed successfully', [
+            'merchant_id' => $merchant->id,
+            'user_id' => $merchantUser->id,
+            'registration_time' => now(),
+            'ip_address' => $request->ip()
+        ]);
+
+        // Send notification email (if needed)
+        $this->notifyRegistrationSuccess($merchantUser, $merchant);
 
         return response()->json([
             'data' => [
@@ -112,7 +229,60 @@ class MerchantAuthController
                 'user' => $merchantUser->only(['id', 'name', 'email', 'role', 'permissions']),
             ]
         ], 201);
+
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        DB::rollBack();
+        
+        Log::warning('Merchant registration validation failed', [
+            'email' => $request->email,
+            'errors' => $e->errors(),
+            'ip' => $request->ip()
+        ]);
+        
+        throw $e;
+        
+    } catch (\Exception $e) {
+        DB::rollBack();
+        
+        Log::error('Merchant registration failed', [
+            'email' => $request->email,
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent()
+        ]);
+        
+        return response()->json([
+            'error' => 'Registration failed. Please try again later.',
+            'debug' => config('app.debug') ? $e->getMessage() : null
+        ], 500);
     }
+}
+
+/**
+ * Send registration success notification
+ */
+protected function notifyRegistrationSuccess(MerchantUser $user, Merchant $merchant): void
+{
+    try {
+        // You can send email, Slack notification, etc.
+        Log::info('Sending registration success notification', [
+            'user_id' => $user->id,
+            'merchant_id' => $merchant->id
+        ]);
+        
+        // Example: Send email notification
+        // Notification::send($user, new MerchantRegistrationSuccessful($merchant));
+        
+    } catch (\Exception $e) {
+        Log::warning('Failed to send registration notification', [
+            'error' => $e->getMessage(),
+            'user_id' => $user->id
+        ]);
+    }
+}
+
+
 
     /**
      * Logout the merchant user

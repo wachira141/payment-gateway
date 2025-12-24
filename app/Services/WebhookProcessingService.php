@@ -5,7 +5,10 @@ namespace App\Services;
 use App\Models\PaymentWebhook;
 use App\Models\Disbursement;
 use App\Models\PaymentIntent;
+use App\Models\Payout;
 use App\Services\MpesaPaymentService;
+use App\Services\AirtelMoneyPaymentService;
+use App\Services\MTNMobileMoneyPaymentService;
 use App\Events\PaymentIntentSucceeded;
 use App\Events\PaymentIntentFailed;
 use App\Events\PaymentIntentCancelled;
@@ -19,10 +22,17 @@ use Exception;
 class WebhookProcessingService
 {
     protected $mpesaService;
+    protected $airtelMoneyService;
+    protected $mtnMoMoService;
 
-    public function __construct(MpesaPaymentService $mpesaService)
-    {
+    public function __construct(
+        MpesaPaymentService $mpesaService,
+        AirtelMoneyPaymentService $airtelMoneyService,
+        MTNMobileMoneyPaymentService $mtnMoMoService
+    ) {
         $this->mpesaService = $mpesaService;
+        $this->airtelMoneyService = $airtelMoneyService;
+        $this->mtnMoMoService = $mtnMoMoService;
     }
     /**
      * Process a webhook event
@@ -79,6 +89,15 @@ class WebhookProcessingService
             return $this->processMpesaWebhook($webhook, $payload);
         }
 
+        // Handle Airtel Money specific webhooks
+        if ($gatewayType === 'airtel_money') {
+            return $this->processAirtelMoneyWebhook($webhook, $payload);
+        }
+        // Handle MTN MoMo specific webhooks
+        if ($gatewayType === 'mtn_momo') {
+            return $this->processMTNMoMoWebhook($webhook, $payload);
+        }
+
         return ['status' => 'ignored'];
 
         // Handle other gateway webhooks
@@ -125,6 +144,7 @@ class WebhookProcessingService
         //         return ['status' => 'ignored'];
         // }
     }
+
 
 
     /**
@@ -296,6 +316,388 @@ class WebhookProcessingService
             'entity_type' => 'payment_intent',
             'entity_id' => $paymentIntent->intent_id,
             'action' => $resultCode == 0 ? 'succeeded' : 'failed'
+        ];
+    }
+
+    /**
+     * Process Airtel Money webhooks
+     */
+    protected function processAirtelMoneyWebhook(PaymentWebhook $webhook, array $payload): array
+    {
+        $eventType = $webhook->event_type;
+
+        // Check if it's B2C (disbursement) callback
+        if ($eventType === 'b2c' || isset($payload['transaction']['airtel_money_id'])) {
+            return $this->processAirtelMoneyB2CCallback($webhook, $payload);
+        }
+
+        // Default to C2B (collection) callback
+        return $this->processAirtelMoneyC2BCallback($webhook, $payload);
+    }
+
+    /**
+     * Process Airtel Money C2B (collection) callback
+     */
+    protected function processAirtelMoneyC2BCallback(PaymentWebhook $webhook, array $payload): array
+    {
+        $callbackData = $this->airtelMoneyService->processC2BCallback($payload);
+
+        if (!$callbackData['success']) {
+            throw new Exception('Failed to process Airtel Money C2B callback: ' . ($callbackData['error'] ?? 'Unknown error'));
+        }
+
+        $data = $callbackData['data'];
+        $transactionId = $data['transaction_id'];
+        $statusCode = $data['status'];
+        $paymentIntentId = $webhook->payment_intent_id ?? null;
+
+        // Find PaymentIntent
+        $paymentIntent = PaymentIntent::where('id', $paymentIntentId)->first();
+
+        if (!$paymentIntent) {
+            // Try to find by transaction reference
+            $paymentIntent = PaymentIntent::where('gateway_data->transaction_id', $transactionId)
+                ->orWhere('intent_id', $transactionId)
+                ->first();
+        }
+
+        if (!$paymentIntent) {
+            Log::warning('Payment intent not found for Airtel Money C2B callback', [
+                'transaction_id' => $transactionId,
+                'webhook_id' => $webhook->webhook_id
+            ]);
+
+            return [
+                'success' => false,
+                'status' => 'ignored',
+                'entity_type' => 'payment_intent',
+                'action' => 'ignored',
+                'error' => 'Payment intent not found'
+            ];
+        }
+
+        if ($statusCode === 'TS') {
+            // Success
+            $paymentIntent->updateStatus('succeeded', [
+                'succeeded_at' => now(),
+                'gateway_transaction_id' => $data['airtel_reference'] ?? $transactionId,
+            ]);
+        } else {
+            // Failed
+            $errorMessage = $data['status_message'] ?? 'Airtel Money payment failed';
+            $paymentIntent->updateStatus('requires_action', [
+                'failure_reason' => $errorMessage,
+            ]);
+        }
+
+        Log::info('Airtel Money C2B callback processed for Payment Intent', [
+            'webhook_id' => $webhook->webhook_id,
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'transaction_id' => $transactionId,
+            'status' => $statusCode
+        ]);
+
+        return [
+            'success' => true,
+            'status' => 'processed',
+            'entity_type' => 'payment_intent',
+            'entity_id' => $paymentIntent->intent_id,
+            'action' => $statusCode === 'TS' ? 'succeeded' : 'failed'
+        ];
+    }
+
+    /**
+     * Process Airtel Money B2C (disbursement) callback
+     */
+    protected function processAirtelMoneyB2CCallback(PaymentWebhook $webhook, array $payload): array
+    {
+        $callbackData = $this->airtelMoneyService->processB2CCallback($payload);
+
+        if (!$callbackData['success']) {
+            throw new Exception('Failed to process Airtel Money B2C callback: ' . ($callbackData['error'] ?? 'Unknown error'));
+        }
+
+        $data = $callbackData['data'];
+        $transactionId = $data['transaction_id'];
+        $statusCode = $data['status'];
+
+        // Find Payout or Disbursement by transaction ID
+        $payout = Payout::where('gateway_payout_id', $transactionId)
+            ->orWhere('reference', $transactionId)
+            ->first();
+
+        if (!$payout) {
+            $disbursement = Disbursement::where('gateway_transaction_id', $transactionId)
+                ->orWhere('gateway_disbursement_id', $transactionId)
+                ->first();
+
+            if ($disbursement) {
+                if ($statusCode === 'TS') {
+                    $disbursement->update([
+                        'status' => 'completed',
+                        'completed_at' => now(),
+                        'gateway_response' => $data,
+                        'gateway_disbursement_id' => $data['airtel_reference'] ?? $transactionId
+                    ]);
+
+                    $this->notifyProvider($disbursement, 'completed');
+                } else {
+                    $errorMessage = $data['status_message'] ?? 'B2C payment failed';
+                    $disbursement->update([
+                        'status' => 'failed',
+                        'failed_at' => now(),
+                        'failure_reason' => $errorMessage,
+                        'gateway_response' => $data
+                    ]);
+
+                    $this->notifyProvider($disbursement, 'failed');
+                }
+
+                return [
+                    'success' => true,
+                    'status' => 'processed',
+                    'entity_type' => 'disbursement',
+                    'entity_id' => $disbursement->id,
+                    'action' => $statusCode === 'TS' ? 'completed' : 'failed'
+                ];
+            }
+
+            Log::warning('Payout/Disbursement not found for Airtel Money B2C callback', [
+                'transaction_id' => $transactionId,
+                'webhook_id' => $webhook->webhook_id
+            ]);
+
+            return ['status' => 'ignored', 'reason' => 'payout_not_found'];
+        }
+
+        // Update Payout status
+        if ($statusCode === 'TS') {
+            $payout->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+                'gateway_response' => $data,
+            ]);
+        } else {
+            $errorMessage = $data['status_message'] ?? 'B2C payment failed';
+            $payout->update([
+                'status' => 'failed',
+                'failed_at' => now(),
+                'failure_reason' => $errorMessage,
+                'gateway_response' => $data,
+            ]);
+        }
+
+        Log::info('Airtel Money B2C callback processed for Payout', [
+            'webhook_id' => $webhook->webhook_id,
+            'payout_id' => $payout->id,
+            'transaction_id' => $transactionId,
+            'status' => $statusCode
+        ]);
+
+        return [
+            'success' => true,
+            'status' => 'processed',
+            'entity_type' => 'payout',
+            // 'entity_id' => $paymentIntent->intent_id,
+            'action' => $statusCode  == 0 ? 'succeeded' : 'failed'
+        ];
+    }
+
+    /**
+     * Process MTN MoMo webhooks
+     */
+    protected function processMTNMoMoWebhook(PaymentWebhook $webhook, array $payload): array
+    {
+        $eventType = $webhook->event_type;
+
+        // Check if it's B2C (transfer/disbursement) callback
+        if ($eventType === 'b2c' || isset($payload['payeeNote'])) {
+            return $this->processMTNMoMoTransferCallback($webhook, $payload);
+        }
+
+        // Default to C2B (collection/request-to-pay) callback
+        return $this->processMTNMoMoCollectionCallback($webhook, $payload);
+    }
+
+    /**
+     * Process MTN MoMo C2B (collection/request-to-pay) callback
+     */
+    protected function processMTNMoMoCollectionCallback(PaymentWebhook $webhook, array $payload): array
+    {
+        $callbackData = $this->mtnMoMoService->processCollectionCallback($payload);
+
+        if (!$callbackData['success']) {
+            throw new Exception('Failed to process MTN MoMo collection callback: ' . ($callbackData['error'] ?? 'Unknown error'));
+        }
+
+        $data = $callbackData['data'];
+        $referenceId = $data['reference_id'];
+        $status = $data['status'];
+        $paymentIntentId = $webhook->payment_intent_id ?? null;
+
+        // Find PaymentIntent
+        $paymentIntent = PaymentIntent::where('id', $paymentIntentId)->first();
+
+        if (!$paymentIntent) {
+            // Try to find by external reference
+            $paymentIntent = PaymentIntent::where('gateway_data->reference_id', $referenceId)
+                ->orWhere('gateway_data->externalId', $data['external_id'] ?? null)
+                ->orWhere('intent_id', $referenceId)
+                ->first();
+        }
+
+        if (!$paymentIntent) {
+            Log::warning('Payment intent not found for MTN MoMo collection callback', [
+                'reference_id' => $referenceId,
+                'webhook_id' => $webhook->webhook_id
+            ]);
+
+            return [
+                'success' => false,
+                'status' => 'ignored',
+                'entity_type' => 'payment_intent',
+                'action' => 'ignored',
+                'error' => 'Payment intent not found'
+            ];
+        }
+
+        if ($status === 'SUCCESSFUL') {
+            // Success
+            $paymentIntent->updateStatus('succeeded', [
+                'succeeded_at' => now(),
+                'gateway_transaction_id' => $data['financial_transaction_id'] ?? $referenceId,
+            ]);
+        } elseif ($status === 'PENDING') {
+            // Still processing
+            $paymentIntent->updateStatus('processing', [
+                'gateway_transaction_id' => $referenceId,
+            ]);
+
+            return [
+                'success' => true,
+                'status' => 'processed',
+                'entity_type' => 'payment_intent',
+                'entity_id' => $paymentIntent->intent_id,
+                'action' => 'processing'
+            ];
+        } else {
+            // Failed (FAILED, REJECTED, TIMEOUT)
+            $errorMessage = $data['reason'] ?? 'MTN MoMo payment failed with status: ' . $status;
+            $paymentIntent->updateStatus('requires_action', [
+                'failure_reason' => $errorMessage,
+            ]);
+        }
+
+        Log::info('MTN MoMo collection callback processed for Payment Intent', [
+            'webhook_id' => $webhook->webhook_id,
+            'payment_intent_id' => $paymentIntent->intent_id,
+            'reference_id' => $referenceId,
+            'status' => $status
+        ]);
+
+        return [
+            'success' => true,
+            'status' => 'processed',
+            'entity_type' => 'payment_intent',
+            'entity_id' => $paymentIntent->intent_id,
+            'action' => $status === 'SUCCESSFUL' ? 'succeeded' : 'failed'
+        ];
+    }
+
+    /**
+     * Process MTN MoMo B2C (transfer/disbursement) callback
+     */
+    protected function processMTNMoMoTransferCallback(PaymentWebhook $webhook, array $payload): array
+    {
+        $callbackData = $this->mtnMoMoService->processTransferCallback($payload);
+
+        if (!$callbackData['success']) {
+            throw new Exception('Failed to process MTN MoMo transfer callback: ' . ($callbackData['error'] ?? 'Unknown error'));
+        }
+
+        $data = $callbackData['data'];
+        $referenceId = $data['reference_id'];
+        $status = $data['status'];
+
+        // Find Payout or Disbursement by reference ID
+        $payout = Payout::where('gateway_payout_id', $referenceId)
+            ->orWhere('reference', $referenceId)
+            ->first();
+
+        if (!$payout) {
+            $disbursement = Disbursement::where('gateway_transaction_id', $referenceId)
+                ->orWhere('gateway_disbursement_id', $referenceId)
+                ->first();
+
+            if ($disbursement) {
+                if ($status === 'SUCCESSFUL') {
+                    $disbursement->update([
+                        'status' => 'completed',
+                        'completed_at' => now(),
+                        'gateway_response' => $data,
+                        'gateway_disbursement_id' => $data['financial_transaction_id'] ?? $referenceId
+                    ]);
+
+                    $this->notifyProvider($disbursement, 'completed');
+                } else {
+                    $errorMessage = $data['reason'] ?? 'MTN MoMo transfer failed with status: ' . $status;
+                    $disbursement->update([
+                        'status' => 'failed',
+                        'failed_at' => now(),
+                        'failure_reason' => $errorMessage,
+                        'gateway_response' => $data
+                    ]);
+
+                    $this->notifyProvider($disbursement, 'failed');
+                }
+
+                return [
+                    'success' => true,
+                    'status' => 'processed',
+                    'entity_type' => 'disbursement',
+                    'entity_id' => $disbursement->id,
+                    'action' => $status === 'SUCCESSFUL' ? 'completed' : 'failed'
+                ];
+            }
+
+            Log::warning('Payout/Disbursement not found for MTN MoMo transfer callback', [
+                'reference_id' => $referenceId,
+                'webhook_id' => $webhook->webhook_id
+            ]);
+
+            return ['status' => 'ignored', 'reason' => 'payout_not_found'];
+        }
+
+        // Update Payout status
+        if ($status === 'SUCCESSFUL') {
+            $payout->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+                'gateway_response' => $data,
+            ]);
+        } else {
+            $errorMessage = $data['reason'] ?? 'MTN MoMo transfer failed with status: ' . $status;
+            $payout->update([
+                'status' => 'failed',
+                'failed_at' => now(),
+                'failure_reason' => $errorMessage,
+                'gateway_response' => $data,
+            ]);
+        }
+
+        Log::info('MTN MoMo transfer callback processed for Payout', [
+            'webhook_id' => $webhook->webhook_id,
+            'payout_id' => $payout->id,
+            'reference_id' => $referenceId,
+            'status' => $status
+        ]);
+
+        return [
+            'success' => true,
+            'status' => 'processed',
+            'entity_type' => 'payout',
+            'entity_id' => $payout->id,
+            'action' => $status === 'SUCCESSFUL' ? 'completed' : 'failed'
         ];
     }
 

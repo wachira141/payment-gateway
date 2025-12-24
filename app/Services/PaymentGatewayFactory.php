@@ -5,24 +5,28 @@ namespace App\Services;
 use App\Models\PaymentGateway;
 use App\Services\MpesaPaymentService;
 use App\Services\KenyaBankTransferService;
+use App\Services\AirtelMoneyPaymentService;
+use App\Services\MTNMobileMoneyPaymentService;
 use Illuminate\Support\Facades\Log;
 use Exception;
 
 class PaymentGatewayFactory
 {
     protected $gateways = [];
-    protected $fallbackOrder = ['mpesa', 'bank_transfer'];
-
+    protected $fallbackOrder = ['mpesa', 'mtn_momo', 'airtel_money', 'bank_transfer'];
     public function __construct(
         MpesaPaymentService $mpesaService,
-        KenyaBankTransferService $bankTransferService
+        KenyaBankTransferService $bankTransferService,
+        AirtelMoneyPaymentService $airtelMoneyService,
+        MTNMobileMoneyPaymentService $mtnMoMoService
     ) {
         $this->gateways = [
             'mpesa' => $mpesaService,
             'bank_transfer' => $bankTransferService,
-            'telebirr' => new TelebirrPaymentService(), // Assuming TelebirrPaymentService is defined
-            'stripe' => new StripePaymentService(), // Assuming StripePaymentService is defined
-            // 'flutterwave' => new FlutterwavePaymentService(), // Assuming FlutterwavePaymentService is defined
+            'airtel_money' => $airtelMoneyService,
+            'mtn_momo' => $mtnMoMoService,
+            'telebirr' => new TelebirrPaymentService(),
+            'stripe' => new StripePaymentService(),
         ];
     }
 
@@ -149,7 +153,7 @@ class PaymentGatewayFactory
 
         // Payment method check
         if (isset($criteria['payment_method'])) {
-            if ($criteria['payment_method'] === 'mobile_money' && $gateway->type !== 'mpesa') {
+            if ($criteria['payment_method'] === 'mobile_money' && !in_array($gateway->type, ['mpesa', 'mtn_momo', 'airtel_money'])) {
                 return false;
             }
             if ($criteria['payment_method'] === 'bank_transfer' && $gateway->type !== 'bank_transfer') {
