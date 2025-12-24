@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\PaymentWebhook;
 use App\Models\PaymentGateway;
 use App\Models\PaymentIntent;
+use App\Models\PaymentTransaction;
 use App\Services\PaymentProcessorService;
 use App\Services\CommissionCalculationService;
 use App\Services\WebhookProcessingService;
@@ -133,30 +134,68 @@ class WebhookController extends Controller
     {
         try {
             // Get gateway
-            $gateway = PaymentGateway::where('type', $gatewayType)->first();
+            // $gateway = PaymentGateway::where('code', $gatewayType)->first();
+            // if (!$gateway) {
+            //     Log::error("Webhook received for unknown gateway: {$gatewayType}");
+            //     return response()->json(['error' => 'Gateway not found'], 404);
+            // }
+
+            // // Create webhook record
+            // $paymentIntent = $this->extractPaymentIntentFromWebhook($request, $gatewayType);
+
+            // $appId = $paymentIntent ? $paymentIntent->merchant_app_id : null;
+
+            // Log::info("Extracted app ID from webhook: " . ($paymentIntent->gateway_data['transaction_id'] ?: 'null'));
+
+            // $webhook = PaymentWebhook::create([
+            //     'payment_gateway_id' => $gateway->id,
+            //     'merchant_app_id' => $appId,
+            //     'webhook_id' => Str::uuid(),
+            //     'event_type' => $eventType ?: $this->determineEventType($request, $gatewayType),
+            //     'gateway_event_id' => $this->extractEventId($request, $gatewayType),
+            //     'payment_intent_id' => $paymentIntent ? $paymentIntent->id : null,
+            //     'payment_transaction_id' => $paymentIntent ? $paymentIntent->gateway_data['transaction_id'] ?? null : null,
+            //     'payload' => $request->all(),
+            //     'status' => 'pending',
+            // ]);
+
+            // Get gateway
+            $gateway = PaymentGateway::where('code', $gatewayType)->first();
             if (!$gateway) {
                 Log::error("Webhook received for unknown gateway: {$gatewayType}");
                 return response()->json(['error' => 'Gateway not found'], 404);
             }
 
+            // Extract payable information (PaymentIntent or WalletTopUp)
+            $payableInfo = $this->extractPayableFromWebhook($request, $gatewayType);
+
+            $appId = $payableInfo['app_id'];
+            $merchantId = $payableInfo['merchant_id'];
+            $paymentIntent = $payableInfo['type'] === 'payment_intent' ? $payableInfo['payable'] : null;
+            $walletTopUp = $payableInfo['type'] === 'wallet_top_up' ? $payableInfo['payable'] : null;
+            $existingTransaction = $payableInfo['transaction'];
+
+            // Log what was extracted
+            $transactionIdForLog = $existingTransaction?->transaction_id
+                ?? $paymentIntent?->gateway_data['transaction_id']
+                ?? 'null';
+            Log::info("Extracted from webhook - Type: {$payableInfo['type']}, Transaction: {$transactionIdForLog}");
+
             // Create webhook record
-            $paymentIntent = $this->extractPaymentIntentFromWebhook($request, $gatewayType);
-
-            $appId = $paymentIntent ? $paymentIntent->merchant_app_id : null;
-
-            Log::info("Extracted app ID from webhook: " . ($paymentIntent->gateway_data['transaction_id'] ?: 'null'));
-
             $webhook = PaymentWebhook::create([
                 'payment_gateway_id' => $gateway->id,
                 'merchant_app_id' => $appId,
+                'merchant_id' => $merchantId, // Add merchant_id for wallet top-ups
                 'webhook_id' => Str::uuid(),
                 'event_type' => $eventType ?: $this->determineEventType($request, $gatewayType),
                 'gateway_event_id' => $this->extractEventId($request, $gatewayType),
-                'payment_intent_id' => $paymentIntent ? $paymentIntent->id : null,
-                'payment_transaction_id' => $paymentIntent ? $paymentIntent->gateway_data['transaction_id'] ?? null : null,
+                'payment_intent_id' => $paymentIntent?->id,
+                'payment_transaction_id' => $existingTransaction?->transaction_id ?? $paymentIntent?->gateway_data['transaction_id'] ?? null,
+                'wallet_top_up_id' => $walletTopUp?->id, // Add wallet_top_up_id
                 'payload' => $request->all(),
                 'status' => 'pending',
             ]);
+
 
             // Dispatch webhook processing job for background processing
             \App\Jobs\WebhookProcessingJob::dispatch($webhook);
@@ -212,19 +251,27 @@ class WebhookController extends Controller
 
             if ($result['success']) {
                 $webhook->markProcessed();
+                $transaction = $result['transaction'] ?? null;
 
-                // Ensure transaction has gateway information
-                $this->enrichTransactionWithGatewayInfo($result['transaction'], $gatewayType);
+                if ($transaction) {
+                    // Check if this is a wallet top-up transaction
+                    if ($transaction->isWalletTopUp()) {
+                        $this->handleWalletTopUpWebhook($transaction);
+                    } else {
+                        // Regular payment intent handling
+                        // Ensure transaction has gateway information
+                        $this->enrichTransactionWithGatewayInfo($transaction, $gatewayType);
 
-                // Calculate gateway-based fees and commission
-                $feeCalculation = $this->gatewayPricingService->calculateFeesForTransaction($result['transaction']);
+                        // Calculate gateway-based fees and commission
+                        $feeCalculation = $this->gatewayPricingService->calculateFeesForTransaction($transaction);
 
-                // Process the commission for the platform using gateway-based pricing
-                $this->commissionCalculationService->processCommission($result['transaction'], $feeCalculation);
+                        // Process the commission for the platform using gateway-based pricing
+                        $this->commissionCalculationService->processCommission($transaction, $feeCalculation);
 
-                // Create charge and handle ledger balancing for successful payment intents
-                $this->paymentIntentService->handleSuccessfulPaymentIntent($result['transaction'], $gatewayType, $feeCalculation);
-
+                        // Create charge and handle ledger balancing for successful payment intents
+                        $this->paymentIntentService->handleSuccessfulPaymentIntent($transaction, $gatewayType, $feeCalculation);
+                    }
+                }
                 return response()->json(['success' => true]);
             } else {
                 $webhook->markFailed($result['error']);
@@ -242,6 +289,26 @@ class WebhookController extends Controller
         }
     }
 
+
+    /**
+     * Handle wallet top-up webhook completion
+     */
+    protected function handleWalletTopUpWebhook(\App\Models\PaymentTransaction $transaction): void
+    {
+        try {
+            $this->walletTopUpService->processTopUpFromTransaction($transaction);
+
+            Log::info('Wallet top-up processed successfully', [
+                'transaction_id' => $transaction->transaction_id,
+                'payable_id' => $transaction->payable_id,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to process wallet top-up from webhook', [
+                'transaction_id' => $transaction->transaction_id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
 
     /**
      * Determine event type from webhook payload
@@ -663,6 +730,80 @@ class WebhookController extends Controller
             return null;
         }
     }
+
+    /**
+     * Extract payable information from webhook (PaymentIntent or WalletTopUp)
+     */
+    private function extractPayableFromWebhook(Request $request, string $gatewayType): array
+    {
+        // First try to find by PaymentTransaction (linked to any payable type)
+        $transaction = $this->findPaymentTransactionFromWebhook($request, $gatewayType);
+
+        if ($transaction) {
+            // Check if it's a wallet top-up
+            if ($transaction->isWalletTopUp()) {
+                return [
+                    'type' => 'wallet_top_up',
+                    'payable' => $transaction->getWalletTopUp(),
+                    'transaction' => $transaction,
+                    'merchant_id' => $transaction->merchant_id,
+                    'app_id' => null,
+                ];
+            }
+
+            // It's a regular payment - get payment intent
+            $paymentIntent = PaymentIntent::where('id', $transaction->payable_id)->first();
+            return [
+                'type' => 'payment_intent',
+                'payable' => $paymentIntent,
+                'transaction' => $transaction,
+                'merchant_id' => $transaction->merchant_id,
+                'app_id' => $paymentIntent?->merchant_app_id,
+            ];
+        }
+
+        // Fall back to legacy PaymentIntent extraction
+        $paymentIntent = $this->extractPaymentIntentFromWebhook($request, $gatewayType);
+
+        return [
+            'type' => $paymentIntent ? 'payment_intent' : null,
+            'payable' => $paymentIntent,
+            'transaction' => null,
+            'merchant_id' => $paymentIntent?->merchant?->id,
+            'app_id' => $paymentIntent?->merchant_app_id,
+        ];
+    }
+
+    /**
+     * Find PaymentTransaction from webhook payload
+     */
+    private function findPaymentTransactionFromWebhook(Request $request, string $gatewayType): ?PaymentTransaction
+    {
+        switch ($gatewayType) {
+            case 'stripe':
+                $stripePaymentIntentId = $request->input('data.object.id');
+                return PaymentTransaction::where('gateway_payment_intent_id', $stripePaymentIntentId)->first();
+
+            case 'mpesa':
+                $checkoutRequestId = $request->input('Body.stkCallback.CheckoutRequestID');
+                return PaymentTransaction::where('gateway_response->checkout_request_id', $checkoutRequestId)->first();
+
+            case 'airtel_money':
+                $transactionId = $request->input('transaction.id', $request->input('transaction_id'));
+                return PaymentTransaction::where('transaction_id', $transactionId)
+                    ->orWhere('gateway_response->transaction_id', $transactionId)->first();
+
+            case 'mtn_momo':
+                $externalId = $request->input('externalId', $request->input('referenceId'));
+                return PaymentTransaction::where('transaction_id', $externalId)
+                    ->orWhere('gateway_response->reference_id', $externalId)->first();
+
+            default:
+                return null;
+        }
+    }
+
+
 
 
     // ==================== WALLET TOP-UP WEBHOOKS ====================

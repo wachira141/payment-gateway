@@ -305,11 +305,8 @@ class PaymentIntentService
 
             $countryCode = $paymentIntent->country_code;
             // Get appropriate gateway for this payment method
-            $gateway = $this->gatewayMapper->getGatewayForPaymentMethod(
-                $paymentMethodType,
-                $paymentIntent->currency,
-                $countryCode,
-                $paymentMethodData
+            $gateway = $this->gatewayMapper->getGatewayById(
+                $paymentMethodData['mobile_money']['provider'] //NB: This need to be updated so that it handles all payment methods. Currently only serving mobile money
             );
 
             if (!$gateway) {
@@ -318,9 +315,12 @@ class PaymentIntentService
                     'currency' => $paymentIntent->currency,
                     'country' => $countryCode,
                     'intent_id' => $paymentIntent->intent_id,
+                    'payment_method_data' => json_encode($paymentMethodData)
                 ]);
                 return false;
             }
+
+            Log::info('gateway', ['data' => $gateway]);
 
             // Prepare payment data for PaymentProcessorService
             $paymentData = [

@@ -29,6 +29,8 @@ use App\Http\Controllers\Api\v1\MerchantUserController;
 use App\Http\Controllers\Api\v1\WalletController;
 use App\Http\Controllers\Api\v1\WalletTopUpController;
 use App\Http\Controllers\Api\v1\WalletTransferController;
+use App\Http\Controllers\Api\v1\DisbursementController;
+
 
 
 Route::middleware(['network.private'])->prefix('v1')->group(function () {
@@ -314,6 +316,21 @@ Route::middleware(['network.private'])->prefix('v1')->group(function () {
         // Supported Banks and Payout Methods
         Route::get('supported-banks', [SupportedBankController::class, 'index']);
         Route::get('supported-payout-methods', [SupportedPayoutMethodController::class, 'index']);
+
+          // Disbursements Management
+          Route::prefix('disbursements')->group(function () {
+            Route::get('/statistics', [DisbursementController::class, 'statistics']);
+            Route::get('/summary', [DisbursementController::class, 'summary']);
+            Route::post('/estimate', [DisbursementController::class, 'estimate']);
+            Route::get('/batches', [DisbursementController::class, 'batches']);
+            Route::post('/batch', [DisbursementController::class, 'storeBatch']);
+            Route::get('/batches/{batchId}', [DisbursementController::class, 'showBatch']);
+            Route::get('/', [DisbursementController::class, 'index']);
+            Route::post('/', [DisbursementController::class, 'store']);
+            Route::get('/{disbursementId}', [DisbursementController::class, 'show']);
+            Route::post('/{disbursementId}/cancel', [DisbursementController::class, 'cancel']);
+            Route::post('/{disbursementId}/retry', [DisbursementController::class, 'retry']);
+        });
 
         // Wallet Management
         Route::prefix('wallets')->group(function () {

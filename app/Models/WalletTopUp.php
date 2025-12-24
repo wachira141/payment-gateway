@@ -24,6 +24,7 @@ class WalletTopUp extends BaseModel
         'expires_at',
         'completed_at',
         'metadata',
+        'payment_transaction_id',
     ];
 
     protected $casts = [
@@ -65,14 +66,22 @@ class WalletTopUp extends BaseModel
     {
         return $this->belongsTo(Merchant::class);
     }
-
     /**
-     * Get the resulting transaction
+     * Get the resulting wallet transaction
      */
-    public function transaction()
+    public function walletTransaction()
     {
         return $this->morphOne(WalletTransaction::class, 'source');
     }
+
+    /**
+     * Get the payment transaction (from payment gateway)
+     */
+    public function paymentTransaction()
+    {
+        return $this->belongsTo(PaymentTransaction::class);
+    }
+
 
     // ==================== SCOPES ====================
 

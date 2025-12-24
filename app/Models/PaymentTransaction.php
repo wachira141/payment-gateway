@@ -10,6 +10,7 @@ class PaymentTransaction extends BaseModel
         'transaction_id',
         'merchant_id',
         'customer_id',
+        'wallet_id',
         'payment_gateway_id',
         'gateway_transaction_id',
         'gateway_payment_intent_id',
@@ -95,6 +96,61 @@ class PaymentTransaction extends BaseModel
     public function refunds()
     {
         return $this->hasMany(PaymentRefund::class);
+    }
+      /**
+     * Get the associated wallet (for wallet top-ups)
+     */
+    public function wallet()
+    {
+        return $this->belongsTo(MerchantWallet::class, 'wallet_id');
+    }
+
+    /**
+     * Get the wallet top-up (when payable_type is WalletTopUp)
+     */
+    public function walletTopUp()
+    {
+        return $this->belongsTo(WalletTopUp::class, 'payable_id');
+    }
+
+    // ==================== WALLET-SPECIFIC SCOPES ====================
+
+    /**
+     * Scope to get wallet top-up transactions
+     */
+    public function scopeForWalletTopUp($query)
+    {
+        return $query->where('payable_type', WalletTopUp::class);
+    }
+
+    /**
+     * Scope to get transactions for a specific wallet
+     */
+    public function scopeForWallet($query, $walletId)
+    {
+        return $query->where('wallet_id', $walletId);
+    }
+
+    // ==================== WALLET HELPER METHODS ====================
+
+    /**
+     * Check if this transaction is for a wallet top-up
+     */
+    public function isWalletTopUp(): bool
+    {
+        return $this->payable_type === WalletTopUp::class;
+    }
+
+    /**
+     * Get the wallet top-up record if this is a wallet transaction
+     */
+    public function getWalletTopUp(): ?WalletTopUp
+    {
+        if (!$this->isWalletTopUp()) {
+            return null;
+        }
+
+        return WalletTopUp::find($this->payable_id);
     }
 
     /**

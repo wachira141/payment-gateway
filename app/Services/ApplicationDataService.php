@@ -24,11 +24,12 @@ class ApplicationDataService
             'user' => \App\Models\User::class,
             'user_profile' => \App\Models\User::class,
             'payment_intent' => \App\Models\PaymentIntent::class,
+            'wallet_top_up' => \App\Models\WalletTopUp::class,
 
             // Add more entity types as needed
         ];
         
-        return $typeToClass[$type] ?? \App\Models\User::class;
+        return $typeToClass[$type] ?? null;
     }
     
 

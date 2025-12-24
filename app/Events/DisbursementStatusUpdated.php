@@ -27,8 +27,7 @@ class DisbursementStatusUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new PrivateChannel('admin.disbursements'),
-            new PrivateChannel('admin.payments'),
+            new PrivateChannel('merchant.' . $this->disbursement->merchant_id . '.disbursements'),
         ];
     }
 
@@ -39,31 +38,42 @@ class DisbursementStatusUpdated implements ShouldBroadcast
 
     public function broadcastWith(): array
     {
-        // Temporarily add this before broadcasting
         Log::info('Dispatching DisbursementStatusUpdated event', [
             'disbursement_id' => $this->disbursement->disbursement_id,
+            'merchant_id' => $this->disbursement->merchant_id,
             'channels' => $this->broadcastOn()
         ]);
+
         return [
             'disbursement' => [
-                'id' => $this->disbursement->disbursement_id ?? $this->disbursement->id,
-                'user_id' => $this->disbursement->user_id,
+                'id' => $this->disbursement->disbursement_id,
+                'merchant_id' => $this->disbursement->merchant_id,
+                'wallet_id' => $this->disbursement->wallet_id,
+                'beneficiary_id' => $this->disbursement->beneficiary_id,
                 'status' => $this->disbursement->status,
-                'amount' => $this->disbursement->net_amount,
+                'amount' => $this->disbursement->amount,
+                'fee_amount' => $this->disbursement->fee_amount,
+                'net_amount' => $this->disbursement->net_amount,
                 'currency' => $this->disbursement->currency,
+                'payout_method' => $this->disbursement->payout_method,
+                'reference' => $this->disbursement->reference,
+                'failure_reason' => $this->disbursement->failure_reason,
                 'gateway_response' => $this->disbursement->gateway_response,
                 'created_at' => $this->disbursement->created_at->toISOString(),
                 'updated_at' => $this->disbursement->updated_at->toISOString(),
                 'processed_at' => $this->disbursement->processed_at?->toISOString(),
                 'completed_at' => $this->disbursement->completed_at?->toISOString(),
                 'failed_at' => $this->disbursement->failed_at?->toISOString(),
-                'failure_reason' => $this->disbursement->failure_reason,
-                'user' => $this->disbursement->user ? [
-                    'id' => $this->disbursement->user->id,
-                    'name' => $this->disbursement->user->name ?? 'Unknown',
-                    'email' => $this->disbursement->user->email ?? '',
-                ] : null, // Handle null user
-                'batch_id' => $this->disbursement->disbursement_batch_id,
+                'beneficiary' => $this->disbursement->beneficiary ? [
+                    'id' => $this->disbursement->beneficiary->beneficiary_id,
+                    'name' => $this->disbursement->beneficiary->name ?? 'Unknown',
+                ] : null,
+                'wallet' => $this->disbursement->wallet ? [
+                    'id' => $this->disbursement->wallet->wallet_id,
+                    'name' => $this->disbursement->wallet->name,
+                    'currency' => $this->disbursement->wallet->currency,
+                ] : null,
+                'batch_id' => $this->disbursement->batch_id,
             ],
             'metadata' => $this->metadata,
             'timestamp' => now()->toISOString(),

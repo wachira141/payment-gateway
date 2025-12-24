@@ -120,7 +120,8 @@ class WalletController extends Controller
     protected function formatWallet($wallet): array
     {
         return [
-            'id' => $wallet->wallet_id,
+            'id' => $wallet->id,
+            'wallet_id' => $wallet->wallet_id,
             'object' => 'wallet',
             'name' => $wallet->name,
             'currency' => $wallet->currency,

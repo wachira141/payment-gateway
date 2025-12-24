@@ -3,12 +3,39 @@
 namespace App\Services;
 
 use App\Models\PaymentGateway;
+use Illuminate\Support\Collection;
 
 /**
  * Service to map payment method types to appropriate payment gateways
  */
 class PaymentMethodGatewayMapper
 {
+
+    public function getGatewayById(
+        string $id
+    ): ?PaymentGateway {
+        // Get the best gateway for the type, country, and currency
+        return PaymentGateway::active()
+            ->where('id', $id)
+            ->orderBy('priority', 'desc')
+            ->first();
+    }
+
+    /**
+     * Get payment gateway by type and code
+     */
+    public function getGatewayForPaymentMethodByTypeAndCode(
+        string $paymentMethodType,
+        string $code,
+    ): ?PaymentGateway {
+        // Get the best gateway for the type, country, and currency
+        return PaymentGateway::active()
+            ->where('type', $paymentMethodType)
+            ->byCode($code)
+            ->orderBy('priority', 'desc')
+            ->first();
+    }
+
     /**
      * Map payment method types to gateway types based on various factors
      */
@@ -18,9 +45,9 @@ class PaymentMethodGatewayMapper
         string $countryCode = 'US',
         array $metadata = []
     ): ?PaymentGateway {
-        
+
         // $gatewayType = $this->mapPaymentMethodToGatewayType($paymentMethodType, $countryCode);
-        
+
         // if (!$gatewayType) {
         //     return null;
         // }
@@ -32,6 +59,21 @@ class PaymentMethodGatewayMapper
             ->byCurrency($currency)
             ->orderBy('priority', 'desc')
             ->first();
+    }
+
+    // Add new method for multiple gateways
+    public function getGatewaysForPaymentMethod(
+        string $paymentMethodType,
+        string $currency = 'USD',
+        string $countryCode = 'US',
+        array $metadata = []
+    ): Collection {
+        return PaymentGateway::active()
+            ->where('type', $paymentMethodType)
+            ->byCountry($countryCode)
+            ->byCurrency($currency)
+            ->orderBy('priority', 'desc')
+            ->get();
     }
 
     /**
@@ -163,7 +205,7 @@ class PaymentMethodGatewayMapper
         string $currency = 'USD'
     ): bool {
         $gatewayType = $this->mapPaymentMethodToGatewayType($paymentMethodType, $countryCode);
-        
+
         if (!$gatewayType) {
             return false;
         }
@@ -171,7 +213,7 @@ class PaymentMethodGatewayMapper
         return PaymentGateway::isPaymentMethodSupported($countryCode, $gatewayType, $currency);
     }
 
-     /**
+    /**
      * Get supported payment methods for country and currency
      */
     public function getSupportedPaymentMethods(string $countryCode, string $currency = 'USD'): array

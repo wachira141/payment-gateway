@@ -64,6 +64,15 @@ class PaymentGateway extends BaseModel
     }
 
     /**
+     * Scope to get only 
+     */
+    public function scopeByCode($query, $code)
+    {
+        return $query->where('code', $code);
+    }
+
+
+    /**
      * Scope to get gateways by country
      */
     public function scopeByCountry($query, $countryCode)
@@ -145,12 +154,12 @@ class PaymentGateway extends BaseModel
     public static function getSupportedCurrenciesForCountry($countryCode)
     {
         $gateways = static::getAvailableForCountryAndCurrency($countryCode);
-        
+
         $currencies = collect();
         foreach ($gateways as $gateway) {
             $currencies = $currencies->merge($gateway->supported_currencies);
         }
-        
+
         return $currencies->unique()->values()->toArray();
     }
 
@@ -177,8 +186,8 @@ class PaymentGateway extends BaseModel
             AVG(CASE WHEN status = "completed" THEN TIMESTAMPDIFF(SECOND, created_at, completed_at) ELSE NULL END) as avg_processing_time
         ')->first();
 
-        $successRate = $metrics->total_transactions > 0 
-            ? ($metrics->successful_transactions / $metrics->total_transactions) * 100 
+        $successRate = $metrics->total_transactions > 0
+            ? ($metrics->successful_transactions / $metrics->total_transactions) * 100
             : 0;
 
         return [
@@ -216,10 +225,10 @@ class PaymentGateway extends BaseModel
     public static function getGatewaysPerformanceSummary($dateFrom = null, $dateTo = null)
     {
         $gateways = static::active()->get();
-        
+
         return $gateways->map(function ($gateway) use ($dateFrom, $dateTo) {
             $metrics = $gateway->getPerformanceMetrics($dateFrom, $dateTo);
-            
+
             return [
                 'gateway' => $gateway->only(['id', 'name', 'code', 'type']),
                 'metrics' => $metrics,
@@ -247,8 +256,8 @@ class PaymentGateway extends BaseModel
             SUM(amount) as total_revenue,
             AVG(amount) as avg_amount
         ')
-        ->groupBy('type')
-        ->get();
+            ->groupBy('type')
+            ->get();
     }
 
     /**

@@ -5,6 +5,9 @@ namespace App\Services;
 use App\Models\MerchantWallet;
 use App\Models\WalletTopUp;
 use App\Models\WalletTransaction;
+use App\Helpers\CurrencyHelper;
+use App\Events\WalletTopUpCompleted;
+use App\Events\WalletTopUpFailed;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -12,10 +15,14 @@ use Illuminate\Pagination\LengthAwarePaginator;
 class WalletTopUpService extends BaseService
 {
     protected WalletService $walletService;
+    protected PaymentProcessorService $paymentProcessor;
 
-    public function __construct(WalletService $walletService)
-    {
+    public function __construct(
+        WalletService $walletService,
+        PaymentProcessorService $paymentProcessor
+    ) {
         $this->walletService = $walletService;
+        $this->paymentProcessor = $paymentProcessor;
     }
 
     // ==================== TOP-UP OPERATIONS ====================
@@ -57,6 +64,7 @@ class WalletTopUpService extends BaseService
 
     /**
      * Initiate bank transfer top-up
+     * Bank transfers don't go through PaymentProcessorService as they're manual
      */
     protected function initiateBankTransferTopUp(MerchantWallet $wallet, float $amount, array $options = []): WalletTopUp
     {
@@ -86,6 +94,9 @@ class WalletTopUpService extends BaseService
     /**
      * Initiate mobile money top-up
      */
+    /**
+     * Initiate mobile money top-up through PaymentProcessorService
+     */
     protected function initiateMobileMoneyTopUp(MerchantWallet $wallet, float $amount, array $options = []): WalletTopUp
     {
         $phoneNumber = $options['phone_number'] ?? null;
@@ -94,6 +105,11 @@ class WalletTopUpService extends BaseService
             throw new \Exception('Phone number is required for mobile money top-up');
         }
 
+        // Determine gateway based on provider
+        $provider = $options['provider'] ?? 'mpesa';
+        $gatewayCode = $this->mapProviderToGatewayCode($provider);
+
+        // Create WalletTopUp record first
         $topUp = WalletTopUp::create([
             'wallet_id' => $wallet->id,
             'merchant_id' => $wallet->merchant_id,
@@ -101,24 +117,64 @@ class WalletTopUpService extends BaseService
             'currency' => $wallet->currency,
             'method' => 'mobile_money',
             'status' => 'pending',
-            'gateway_type' => $options['provider'] ?? 'mtn', // mtn, airtel, etc.
-            'expires_at' => now()->addMinutes(15), // 15 minute expiry
+            'gateway_type' => $provider,
+            'expires_at' => now()->addMinutes(15),
             'metadata' => array_merge($options['metadata'] ?? [], [
                 'phone_number' => $phoneNumber,
             ]),
         ]);
 
-        // TODO: Integrate with mobile money provider to initiate collection
-        // For now, mark as pending and wait for manual/callback completion
+        // Process payment through PaymentProcessorService
+        $paymentResult = $this->paymentProcessor->processPayment([
+            'gateway_code' => $gatewayCode,
+            'merchant_id' => $wallet->merchant_id,
+            'payable_type' => 'wallet_top_up',
+            'payable_id' => $topUp->id,
+            'amount' => $amount,
+            'currency' => $wallet->currency,
+            'phone_number' => $phoneNumber,
+            'description' => "Wallet top-up: {$topUp->top_up_id}",
+            'metadata' => [
+                'wallet_id' => $wallet->wallet_id,
+                'top_up_id' => $topUp->top_up_id,
+            ],
+        ]);
 
-        return $topUp;
+        if ($paymentResult['success']) {
+            $topUp->update([
+                'status' => 'processing',
+                'gateway_reference' => $paymentResult['checkout_request_id']
+                    ?? $paymentResult['reference_id']
+                    ?? $paymentResult['transaction_id']
+                    ?? null,
+                'payment_transaction_id' => $paymentResult['transaction']->id ?? null,
+            ]);
+
+            $this->logActivity('wallet.topup.payment_initiated', [
+                'top_up_id' => $topUp->top_up_id,
+                'gateway' => $gatewayCode,
+                'transaction_id' => $paymentResult['transaction']->id ?? null,
+            ]);
+        } else {
+            $topUp->markFailed($paymentResult['error'] ?? 'Payment initiation failed');
+
+            $this->logActivity('wallet.topup.payment_failed', [
+                'top_up_id' => $topUp->top_up_id,
+                'error' => $paymentResult['error'] ?? 'Unknown error',
+            ]);
+        }
+
+        return $topUp->fresh();
     }
 
     /**
-     * Initiate card top-up
+     * Initiate card top-up through PaymentProcessorService
      */
     protected function initiateCardTopUp(MerchantWallet $wallet, float $amount, array $options = []): WalletTopUp
     {
+        $gateway = $options['gateway'] ?? 'stripe';
+
+        // Create WalletTopUp record first
         $topUp = WalletTopUp::create([
             'wallet_id' => $wallet->id,
             'merchant_id' => $wallet->merchant_id,
@@ -126,15 +182,58 @@ class WalletTopUpService extends BaseService
             'currency' => $wallet->currency,
             'method' => 'card',
             'status' => 'pending',
-            'gateway_type' => $options['gateway'] ?? 'stripe',
-            'expires_at' => now()->addMinutes(30), // 30 minute expiry
+            'gateway_type' => $gateway,
+            'expires_at' => now()->addMinutes(30),
             'metadata' => $options['metadata'] ?? null,
         ]);
 
-        // TODO: Integrate with card payment gateway
-        // Return payment URL or client secret for frontend processing
+        // Process payment through PaymentProcessorService
+        $paymentResult = $this->paymentProcessor->processPayment([
+            'gateway_code' => $gateway,
+            'merchant_id' => $wallet->merchant_id,
+            'payable_type' => 'wallet_top_up',
+            'payable_id' => $topUp->id,
+            'amount' => CurrencyHelper::toMinorUnits($amount, $wallet->currency),
+            'currency' => $wallet->currency,
+            'description' => "Wallet top-up: {$topUp->top_up_id}",
+            'metadata' => [
+                'wallet_id' => $wallet->wallet_id,
+                'top_up_id' => $topUp->top_up_id,
+            ],
+        ]);
 
-        return $topUp;
+        if ($paymentResult['success']) {
+            $updateData = [
+                'status' => 'processing',
+                'payment_transaction_id' => $paymentResult['transaction_id'] ?? null,
+            ];
+
+            // Store Stripe-specific data
+            if (isset($paymentResult['payment_intent_id'])) {
+                $updateData['gateway_reference'] = $paymentResult['payment_intent_id'];
+                $updateData['gateway_response'] = [
+                    'payment_intent_id' => $paymentResult['payment_intent_id'],
+                    'client_secret' => $paymentResult['client_secret'] ?? null,
+                ];
+            }
+
+            $topUp->update($updateData);
+
+            $this->logActivity('wallet.topup.payment_initiated', [
+                'top_up_id' => $topUp->top_up_id,
+                'gateway' => $gateway,
+                'transaction_id' => $paymentResult['transaction_id'] ?? null,
+            ]);
+        } else {
+            $topUp->markFailed($paymentResult['error'] ?? 'Payment initiation failed');
+
+            $this->logActivity('wallet.topup.payment_failed', [
+                'top_up_id' => $topUp->top_up_id,
+                'error' => $paymentResult['error'] ?? 'Unknown error',
+            ]);
+        }
+
+        return $topUp->fresh();
     }
 
     /**
@@ -157,6 +256,23 @@ class WalletTopUpService extends BaseService
         return $topUp;
     }
 
+
+    /**
+     * Map mobile money provider to gateway code
+     */
+    protected function mapProviderToGatewayCode(string $provider): string
+    {
+        $mapping = [
+            'mpesa' => 'mpesa',
+            'mtn' => 'mtn_momo',
+            'mtn_momo' => 'mtn_momo',
+            'airtel' => 'airtel_money',
+            'airtel_money' => 'airtel_money',
+            'telebirr' => 'telebirr',
+        ];
+
+        return $mapping[$provider] ?? $provider;
+    }
     /**
      * Process top-up callback
      */
@@ -186,8 +302,11 @@ class WalletTopUpService extends BaseService
                 // Mark top-up as completed
                 $topUp->update([
                     'status' => 'completed',
-                    'gateway_reference' => $gatewayReference,
-                    'gateway_response' => $gatewayResponse,
+                    'gateway_reference' => $gatewayReference ?? $topUp->gateway_reference,
+                    'gateway_response' => array_merge(
+                        $topUp->gateway_response ?? [],
+                        $gatewayResponse
+                    ),
                     'completed_at' => now(),
                 ]);
 
@@ -204,6 +323,8 @@ class WalletTopUpService extends BaseService
                     'top_up_id' => $topUp->top_up_id,
                     'amount' => $topUp->amount,
                 ]);
+                // Fire event for real-time updates
+                event(new WalletTopUpCompleted($topUp));
             } else {
                 // Mark top-up as failed
                 $failureReason = $callbackData['failure_reason'] ?? 'Payment failed';
@@ -213,10 +334,33 @@ class WalletTopUpService extends BaseService
                     'top_up_id' => $topUp->top_up_id,
                     'reason' => $failureReason,
                 ]);
+                // Fire event for real-time updates
+                event(new WalletTopUpFailed($topUp, $failureReason));
             }
 
             return $topUp->fresh();
         });
+    }
+
+     /**
+     * Process top-up from PaymentTransaction (called by WebhookController)
+     */
+    public function processTopUpFromTransaction(\App\Models\PaymentTransaction $transaction): WalletTopUp
+    {
+        $topUp = WalletTopUp::find($transaction->payable_id);
+
+        if (!$topUp) {
+            throw new \Exception('WalletTopUp not found for transaction: ' . $transaction->transaction_id);
+        }
+
+        $success = $transaction->status === 'completed';
+
+        return $this->processTopUpCallback($topUp->top_up_id, [
+            'success' => $success,
+            'gateway_reference' => $transaction->gateway_transaction_id,
+            'gateway_response' => $transaction->gateway_response ?? [],
+            'failure_reason' => $success ? null : ($transaction->failure_reason ?? 'Payment failed'),
+        ]);
     }
 
     /**
@@ -276,7 +420,9 @@ class WalletTopUpService extends BaseService
             throw new \Exception('Wallet not found');
         }
 
-        $query = WalletTopUp::where('wallet_id', $wallet->id);
+       
+        $query = WalletTopUp::where('wallet_id', $wallet->id)
+            ->with(['paymentTransaction']);
 
         // Apply filters
         if (!empty($filters['status'])) {
@@ -316,6 +462,14 @@ class WalletTopUpService extends BaseService
         return WalletTopUp::findByGatewayReference($reference);
     }
 
+     /**
+     * Get top-up by payment transaction ID
+     */
+    public function getTopUpByTransactionId(string $transactionId): ?WalletTopUp
+    {
+        return WalletTopUp::where('payment_transaction_id', $transactionId)->first();
+    }
+    
     /**
      * Complete a top-up manually (for bank transfers confirmed offline)
      */

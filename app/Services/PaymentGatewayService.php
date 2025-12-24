@@ -110,6 +110,33 @@ class PaymentGatewayService
        /**
      * Get available gateways filtered by payment method types
      */
+    // public function getAvailableGatewaysForPaymentMethods(
+    //     string $countryCode, 
+    //     string $currency = 'USD', 
+    //     array $paymentMethodTypes = []
+    // ) {
+    //     if (empty($paymentMethodTypes)) {
+    //         return $this->getAvailableGateways($countryCode, $currency);
+    //     }
+
+    //     $gatewayMapper = new \App\Services\PaymentMethodGatewayMapper();
+    //     $filteredGateways = collect();
+
+    //     foreach ($paymentMethodTypes as $paymentMethodType) {
+    //         $gateway = $gatewayMapper->getGatewayForPaymentMethod(
+    //             $paymentMethodType, 
+    //             $currency, 
+    //             $countryCode
+    //         );
+            
+    //         if ($gateway && !$filteredGateways->contains('id', $gateway->id)) {
+    //             $filteredGateways->push($gateway);
+    //         }
+    //     }
+
+    //     // Sort by priority
+    //     return $filteredGateways->sortByDesc('priority')->values();
+    // }
     public function getAvailableGatewaysForPaymentMethods(
         string $countryCode, 
         string $currency = 'USD', 
@@ -118,22 +145,28 @@ class PaymentGatewayService
         if (empty($paymentMethodTypes)) {
             return $this->getAvailableGateways($countryCode, $currency);
         }
-
+    
         $gatewayMapper = new \App\Services\PaymentMethodGatewayMapper();
         $filteredGateways = collect();
-
+    
         foreach ($paymentMethodTypes as $paymentMethodType) {
-            $gateway = $gatewayMapper->getGatewayForPaymentMethod(
+            $gateways = $gatewayMapper->getGatewaysForPaymentMethod(
                 $paymentMethodType, 
                 $currency, 
                 $countryCode
             );
             
-            if ($gateway && !$filteredGateways->contains('id', $gateway->id)) {
-                $filteredGateways->push($gateway);
+            // Handle both single gateway (for backward compatibility) 
+            // and collection of gateways
+            $gateways = is_iterable($gateways) ? $gateways : [$gateways];
+            
+            foreach ($gateways as $gateway) {
+                if ($gateway && !$filteredGateways->contains('id', $gateway->id)) {
+                    $filteredGateways->push($gateway);
+                }
             }
         }
-
+    
         // Sort by priority
         return $filteredGateways->sortByDesc('priority')->values();
     }

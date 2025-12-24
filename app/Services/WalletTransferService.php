@@ -53,12 +53,18 @@ class WalletTransferService extends BaseService
 
         return DB::transaction(function () use ($fromWallet, $toWallet, $amount, $description) {
             $reference = 'TRF' . strtoupper(substr(md5(uniqid()), 0, 12));
+            $balance_before = $fromWallet->getAvailableBalance();
+            $balance_after = $balance_before - $amount;
 
             // Debit source wallet
             $debitTransaction = WalletTransaction::createTransaction($fromWallet, [
                 'type' => 'transfer_out',
                 'direction' => 'debit',
                 'amount' => $amount,
+                'balance_before' => $balance_before,
+                'balance_after' => $balance_after,
+                'source_type' => get_class($toWallet)?? null,
+                'source_id' => $toWallet->id,
                 'status' => 'completed',
                 'reference' => $reference,
                 'description' => $description,
@@ -71,11 +77,17 @@ class WalletTransferService extends BaseService
             $fromWallet->debit($amount);
             $debitTransaction->update(['balance_after' => $fromWallet->fresh()->available_balance]);
 
+            $balance_before = $toWallet->getAvailableBalance();
+            $balance_after = $balance_before + $amount;
             // Credit destination wallet
             $creditTransaction = WalletTransaction::createTransaction($toWallet, [
                 'type' => 'transfer_in',
                 'direction' => 'credit',
                 'amount' => $amount,
+                'balance_before' => $balance_before,
+                'balance_after' => $balance_after,
+                'source_type' => get_class($fromWallet)?? null,
+                'source_id' => $fromWallet->id,
                 'status' => 'completed',
                 'reference' => $reference,
                 'description' => $description,

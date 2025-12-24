@@ -15,7 +15,7 @@ class CreateWalletRequest extends FormRequest
     {
         return [
             'currency' => 'required|string|size:3',
-            'type' => 'required|in:operating,reserve,disbursement',
+            'type' => 'required|in:operating,reserve,payout',
             'name' => 'sometimes|string|max:255',
             'settings' => 'sometimes|array',
             'settings.auto_sweep' => 'sometimes|boolean',

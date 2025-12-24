@@ -10,9 +10,12 @@ class Disbursement extends BaseModel
 {
     protected $fillable = [
         'disbursement_id',
-        'user_id',
-        'merchant_bank_account_id',
+        'merchant_id',
+        'wallet_id',
+        'beneficiary_id',
         'disbursement_batch_id',
+        'funding_source',
+        'payout_method',
         'gross_amount',
         'fee_amount',
         'net_amount',
@@ -22,37 +25,53 @@ class Disbursement extends BaseModel
         'gateway_transaction_id',
         'gateway_response',
         'failure_reason',
+        'description',
+        'external_reference',
+        'estimated_arrival',
         'processed_at',
         'completed_at',
         'failed_at',
+        'cancelled_at',
         'metadata',
     ];
 
     protected $casts = [
-        'gross_amount' => 'decimal:2',
-        'fee_amount' => 'decimal:2',
-        'net_amount' => 'decimal:2',
+        'gross_amount' => 'decimal:4',
+        'fee_amount' => 'decimal:4',
+        'net_amount' => 'decimal:4',
         'gateway_response' => 'array',
         'metadata' => 'array',
         'processed_at' => 'datetime',
         'completed_at' => 'datetime',
         'failed_at' => 'datetime',
+        'cancelled_at' => 'datetime',
+        'estimated_arrival' => 'datetime',
     ];
 
+    // ==================== RELATIONSHIPS ====================
+
     /**
-     * Get the associated user (provider)
+     * Get the merchant that owns the disbursement
      */
-    public function user()
+    public function merchant()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Merchant::class);
     }
 
     /**
-     * Get the associated bank account
+     * Get the wallet used for funding
      */
-    public function providerBankAccount()
+    public function wallet()
     {
-        return $this->belongsTo(MerchantBankAccount::class);
+        return $this->belongsTo(MerchantWallet::class, 'wallet_id');
+    }
+
+    /**
+     * Get the beneficiary receiving the disbursement
+     */
+    public function beneficiary()
+    {
+        return $this->belongsTo(Beneficiary::class, 'beneficiary_id');
     }
 
     /**
@@ -63,20 +82,14 @@ class Disbursement extends BaseModel
         return $this->belongsTo(DisbursementBatch::class);
     }
 
-    /**
-     * Get the associated earnings
-     */
-    // public function providerEarnings()
-    // {
-    //     return $this->hasMany(ProviderEarning::class);
-    // }
+    // ==================== SCOPES ====================
 
     /**
-     * Scope for provider
+     * Scope for merchant
      */
-    public function scopeForProvider($query, $userId)
+    public function scopeForMerchant($query, $merchantId)
     {
-        return $query->where('user_id', $userId);
+        return $query->where('merchant_id', $merchantId);
     }
 
     /**
@@ -88,9 +101,43 @@ class Disbursement extends BaseModel
     }
 
     /**
+     * Scope by funding source
+     */
+    public function scopeByFundingSource($query, $source)
+    {
+        return $query->where('funding_source', $source);
+    }
+
+    /**
+     * Scope by wallet
+     */
+    public function scopeByWallet($query, $walletId)
+    {
+        return $query->where('wallet_id', $walletId);
+    }
+
+    // ==================== STATUS CHECKS ====================
+
+    /**
+     * Check if disbursement is pending
+     */
+    public function isPending(): bool
+    {
+        return $this->status === 'pending';
+    }
+
+    /**
+     * Check if disbursement is processing
+     */
+    public function isProcessing(): bool
+    {
+        return $this->status === 'processing';
+    }
+
+    /**
      * Check if disbursement is completed
      */
-    public function isCompleted()
+    public function isCompleted(): bool
     {
         return $this->status === 'completed';
     }
@@ -98,24 +145,58 @@ class Disbursement extends BaseModel
     /**
      * Check if disbursement failed
      */
-    public function isFailed()
+    public function isFailed(): bool
     {
         return $this->status === 'failed';
     }
 
     /**
+     * Check if disbursement is cancelled
+     */
+    public function isCancelled(): bool
+    {
+        return $this->status === 'cancelled';
+    }
+
+    /**
+     * Check if disbursement can be cancelled
+     */
+    public function canBeCancelled(): bool
+    {
+        return in_array($this->status, ['pending', 'processing']);
+    }
+
+    /**
+     * Check if disbursement can be retried
+     */
+    public function canBeRetried(): bool
+    {
+        return $this->status === 'failed';
+    }
+
+    // ==================== CORE OPERATIONS ====================
+
+    /**
      * Create new disbursement
      */
-    public static function createDisbursement(array $data)
+    public static function createDisbursement(array $data): self
     {
         return static::create([
-            'disbursement_id' => 'disb_' . Str::random(16),
-            'user_id' => $data['user_id'],
-            'provider_bank_account_id' => $data['provider_bank_account_id'],
+            'disbursement_id' => 'disb_' . Str::random(24),
+            'merchant_id' => $data['merchant_id'],
+            'wallet_id' => $data['wallet_id'],
+            'beneficiary_id' => $data['beneficiary_id'],
+            'disbursement_batch_id' => $data['disbursement_batch_id'] ?? null,
+            'funding_source' => $data['funding_source'] ?? 'wallet',
+            'payout_method' => $data['payout_method'] ?? 'bank_transfer',
             'gross_amount' => $data['gross_amount'],
             'fee_amount' => $data['fee_amount'] ?? 0,
             'net_amount' => $data['gross_amount'] - ($data['fee_amount'] ?? 0),
-            'currency' => $data['currency'] ?? 'USD',
+            'currency' => $data['currency'],
+            'status' => 'pending',
+            'description' => $data['description'] ?? null,
+            'external_reference' => $data['external_reference'] ?? null,
+            'estimated_arrival' => $data['estimated_arrival'] ?? null,
             'metadata' => $data['metadata'] ?? [],
         ]);
     }
@@ -123,7 +204,7 @@ class Disbursement extends BaseModel
     /**
      * Mark as processing
      */
-    public function markAsProcessing($gatewayDisbursementId = null)
+    public function markAsProcessing($gatewayDisbursementId = null): bool
     {
         $updateData = [
             'status' => 'processing',
@@ -138,9 +219,25 @@ class Disbursement extends BaseModel
     }
 
     /**
+     * Mark as sending (gateway submitted)
+     */
+    public function markAsSending($gatewayResponse = null): bool
+    {
+        $updateData = [
+            'status' => 'sending',
+        ];
+
+        if ($gatewayResponse) {
+            $updateData['gateway_response'] = $gatewayResponse;
+        }
+
+        return $this->update($updateData);
+    }
+
+    /**
      * Mark as completed
      */
-    public function markAsCompleted($gatewayResponse = null)
+    public function markAsCompleted($gatewayResponse = null): bool
     {
         $updateData = [
             'status' => 'completed',
@@ -157,7 +254,7 @@ class Disbursement extends BaseModel
     /**
      * Mark as failed
      */
-    public function markAsFailed($reason, $gatewayResponse = null)
+    public function markAsFailed(string $reason, $gatewayResponse = null): bool
     {
         $updateData = [
             'status' => 'failed',
@@ -173,89 +270,68 @@ class Disbursement extends BaseModel
     }
 
     /**
-     * Get provider disbursement summary
+     * Mark as cancelled
      */
-    public static function getProviderSummary($userId)
+    public function markAsCancelled(string $reason = null): bool
     {
-        $disbursements = static::forProvider($userId);
+        return $this->update([
+            'status' => 'cancelled',
+            'cancelled_at' => now(),
+            'failure_reason' => $reason,
+        ]);
+    }
+
+    // ==================== STATIC QUERY METHODS ====================
+
+    /**
+     * Get merchant disbursement summary
+     */
+    public static function getMerchantSummary(string $merchantId): array
+    {
+        $disbursements = static::forMerchant($merchantId);
 
         return [
-            'total_disbursed' => $disbursements->where('status', 'completed')->sum('net_amount'),
-            'pending_disbursements' => $disbursements->whereIn('status', ['pending', 'processing'])->sum('net_amount'),
-            'total_fees' => $disbursements->where('status', 'completed')->sum('fee_amount'),
+            'total_disbursed' => (float) $disbursements->clone()->where('status', 'completed')->sum('net_amount'),
+            'pending_disbursements' => (float) $disbursements->clone()->whereIn('status', ['pending', 'processing', 'sending'])->sum('net_amount'),
+            'total_fees' => (float) $disbursements->clone()->where('status', 'completed')->sum('fee_amount'),
             'disbursement_count' => $disbursements->count(),
+            'completed_count' => $disbursements->clone()->where('status', 'completed')->count(),
+            'pending_count' => $disbursements->clone()->whereIn('status', ['pending', 'processing', 'sending'])->count(),
+            'failed_count' => $disbursements->clone()->where('status', 'failed')->count(),
         ];
     }
 
     /**
-     * Get admin disbursement overview
+     * Get merchant disbursements with filters
      */
-    // public static function getAdminDisbursementOverview($dateFrom = null, $dateTo = null)
-    // {
-    //     $query = static::query();
-
-    //     if ($dateFrom) {
-    //         $query->where('created_at', '>=', $dateFrom);
-    //     }
-    //     if ($dateTo) {
-    //         $query->where('created_at', '<=', $dateTo);
-    //     }
-
-    //     return $query->selectRaw('
-    //         COUNT(*) as total_disbursements,
-    //              COALESCE(SUM(gross_amount), 0) as total_gross_amount,
-    //     COALESCE(SUM(fee_amount), 0) as total_fees,
-    //     COALESCE(SUM(net_amount), 0) as total_net_amount,
-    //         SUM(CASE WHEN status = "pending" THEN net_amount ELSE 0 END) as pending_disbursements,
-    //         SUM(CASE WHEN status = "processing" THEN net_amount ELSE 0 END) as processing_disbursements,
-    //         SUM(CASE WHEN status = "completed" THEN net_amount ELSE 0 END) as completed_disbursements,
-    //         SUM(CASE WHEN status = "failed" THEN net_amount ELSE 0 END) as failed_disbursements
-    //     ')->first();
-    // }
-
-
-    public static function getAdminDisbursementOverview($dateFrom = null, $dateTo = null)
+    public static function getMerchantDisbursements(string $merchantId, array $filters = [], $perPage = 15)
     {
-        $query = static::query();
-
-        if ($dateFrom) {
-            $query->where('created_at', '>=', $dateFrom);
-        }
-        if ($dateTo) {
-            $query->where('created_at', '<=', $dateTo);
-        }
-
-        return $query->selectRaw('
-        COUNT(*) as total_disbursements,
-        COALESCE(SUM(gross_amount), 0) as total_gross_amount,
-        COALESCE(SUM(fee_amount), 0) as total_fees,
-        COALESCE(SUM(net_amount), 0) as total_net_amount,
-        COALESCE(SUM(CASE WHEN status = "pending" THEN net_amount ELSE 0 END), 0) as pending_disbursements,
-        COALESCE(SUM(CASE WHEN status = "processing" THEN net_amount ELSE 0 END), 0) as processing_disbursements,
-        COALESCE(SUM(CASE WHEN status = "completed" THEN net_amount ELSE 0 END), 0) as completed_disbursements,
-        COALESCE(SUM(CASE WHEN status = "failed" THEN net_amount ELSE 0 END), 0) as failed_disbursements,
-        COALESCE(SUM(CASE WHEN status = "cancelled" THEN net_amount ELSE 0 END), 0) as cancelled_disbursements
-    ')->first();
-    }
-
-    /**
-     * Get admin disbursements with filters
-     */
-    public static function getAdminDisbursements(array $filters = [], $perPage = 15)
-    {
-        $query = static::with(['user:name,email,id', 'providerBankAccount:id,account_number,bank_name', 'disbursementBatch', 'providerEarnings'])
+        $query = static::with(['wallet', 'beneficiary', 'disbursementBatch'])
+            ->forMerchant($merchantId)
             ->orderBy('created_at', 'desc');
 
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
 
-        if (isset($filters['user_id'])) {
-            $query->where('user_id', $filters['user_id']);
+        if (isset($filters['funding_source'])) {
+            $query->where('funding_source', $filters['funding_source']);
+        }
+
+        if (isset($filters['wallet_id'])) {
+            $query->where('wallet_id', $filters['wallet_id']);
+        }
+
+        if (isset($filters['beneficiary_id'])) {
+            $query->where('beneficiary_id', $filters['beneficiary_id']);
         }
 
         if (isset($filters['batch_id'])) {
             $query->where('disbursement_batch_id', $filters['batch_id']);
+        }
+
+        if (isset($filters['currency'])) {
+            $query->where('currency', $filters['currency']);
         }
 
         if (isset($filters['date_from'])) {
@@ -278,13 +354,82 @@ class Disbursement extends BaseModel
     }
 
     /**
+     * Get disbursement statistics for merchant
+     */
+    public static function getMerchantStatistics(string $merchantId, array $filters = []): array
+    {
+        $query = static::forMerchant($merchantId);
+
+        if (isset($filters['date_from'])) {
+            $query->where('created_at', '>=', $filters['date_from']);
+        }
+
+        if (isset($filters['date_to'])) {
+            $query->where('created_at', '<=', $filters['date_to']);
+        }
+
+        $stats = $query->selectRaw('
+            COUNT(*) as total_disbursements,
+            COALESCE(SUM(gross_amount), 0) as total_gross_amount,
+            COALESCE(SUM(fee_amount), 0) as total_fees,
+            COALESCE(SUM(net_amount), 0) as total_net_amount,
+            COALESCE(SUM(CASE WHEN status = "pending" THEN net_amount ELSE 0 END), 0) as pending_amount,
+            COALESCE(SUM(CASE WHEN status = "processing" THEN net_amount ELSE 0 END), 0) as processing_amount,
+            COALESCE(SUM(CASE WHEN status = "sending" THEN net_amount ELSE 0 END), 0) as sending_amount,
+            COALESCE(SUM(CASE WHEN status = "completed" THEN net_amount ELSE 0 END), 0) as completed_amount,
+            COALESCE(SUM(CASE WHEN status = "failed" THEN net_amount ELSE 0 END), 0) as failed_amount,
+            COALESCE(SUM(CASE WHEN status = "cancelled" THEN net_amount ELSE 0 END), 0) as cancelled_amount,
+            COUNT(CASE WHEN status = "pending" THEN 1 END) as pending_count,
+            COUNT(CASE WHEN status = "processing" THEN 1 END) as processing_count,
+            COUNT(CASE WHEN status = "sending" THEN 1 END) as sending_count,
+            COUNT(CASE WHEN status = "completed" THEN 1 END) as completed_count,
+            COUNT(CASE WHEN status = "failed" THEN 1 END) as failed_count,
+            COUNT(CASE WHEN status = "cancelled" THEN 1 END) as cancelled_count
+        ')->first();
+
+        // Get by currency breakdown
+        $byCurrency = static::forMerchant($merchantId)
+            ->selectRaw('
+                currency,
+                COUNT(*) as count,
+                COALESCE(SUM(net_amount), 0) as total_amount,
+                COALESCE(SUM(CASE WHEN status = "completed" THEN net_amount ELSE 0 END), 0) as completed_amount
+            ')
+            ->groupBy('currency')
+            ->get()
+            ->keyBy('currency')
+            ->toArray();
+
+        // Get by payout method breakdown
+        $byMethod = static::forMerchant($merchantId)
+            ->selectRaw('
+                payout_method,
+                COUNT(*) as count,
+                COALESCE(SUM(net_amount), 0) as total_amount
+            ')
+            ->groupBy('payout_method')
+            ->get()
+            ->keyBy('payout_method')
+            ->toArray();
+
+        return [
+            'overview' => $stats ? $stats->toArray() : [],
+            'by_currency' => $byCurrency,
+            'by_payout_method' => $byMethod,
+        ];
+    }
+
+    /**
      * Get failed disbursements for retry
      */
-    public static function getFailedDisbursementsForRetry($limit = 50)
+    public static function getFailedDisbursementsForRetry(string $merchantId, $limit = 50)
     {
-        return static::where('status', 'failed')
-            ->whereNull('processed_at')
-            ->orWhere('processed_at', '<', now()->subHours(24))
+        return static::forMerchant($merchantId)
+            ->where('status', 'failed')
+            ->where(function ($query) {
+                $query->whereNull('processed_at')
+                    ->orWhere('processed_at', '<', now()->subHours(24));
+            })
             ->orderBy('created_at', 'asc')
             ->limit($limit)
             ->get();
@@ -293,9 +438,10 @@ class Disbursement extends BaseModel
     /**
      * Get daily disbursement data
      */
-    public static function getDailyDisbursementData($days = 30)
+    public static function getDailyDisbursementData(string $merchantId, $days = 30)
     {
-        return static::where('created_at', '>=', now()->subDays($days))
+        return static::forMerchant($merchantId)
+            ->where('created_at', '>=', now()->subDays($days))
             ->where('status', '!=', 'cancelled')
             ->selectRaw('
                 DATE(created_at) as date,
@@ -310,187 +456,79 @@ class Disbursement extends BaseModel
             ->get();
     }
 
-    /**
-     * Get disbursement statistics by provider
-     */
-    public static function getDisbursementStatsByProvider($dateFrom = null, $dateTo = null, $limit = 10)
-    {
-        $query = static::join('users', 'disbursements.user_id', '=', 'users.id')
-            ->where('disbursements.status', '!=', 'cancelled');
-
-        if ($dateFrom) {
-            $query->where('disbursements.created_at', '>=', $dateFrom);
-        }
-        if ($dateTo) {
-            $query->where('disbursements.created_at', '<=', $dateTo);
-        }
-
-        return $query->selectRaw('
-            users.id,
-            users.name,
-            users.email,
-            COUNT(*) as total_disbursements,
-            SUM(disbursements.net_amount) as total_disbursed,
-            SUM(disbursements.fee_amount) as total_fees,
-            AVG(disbursements.net_amount) as avg_disbursement_amount
-        ')
-            ->groupBy('users.id', 'users.name', 'users.email')
-            ->orderBy('total_disbursed', 'desc')
-            ->limit($limit)
-            ->get();
-    }
+    // ==================== TRANSFORMATION METHODS ====================
 
     /**
-     * Get pending disbursements grouped by provider
+     * Transform disbursement for API response
      */
-    public static function getPendingDisbursementsByProvider()
+    public function transform(): array
     {
-        return static::where('disbursements.status', 'pending')
-            ->join('users', 'disbursements.user_id', '=', 'users.id')
-            ->selectRaw('
-                        users.id,
-                        users.name,
-                        users.email,
-                        COUNT(*) as pending_count,
-                        SUM(disbursements.net_amount) as total_pending_amount
-                    ')
-            ->groupBy('users.id', 'users.name', 'users.email')
-            ->orderBy('total_pending_amount', 'desc')
-            ->get();
-    }
-
-
-    /**
-     * Transform disbursement details into a friendly format
-     *
-     * @return array
-     */
-    public function transformDisbursementDetails()
-    {
-        // Load relationships if not already loaded
-        if (!$this->relationLoaded('user')) {
-            $this->load('user');
-        }
-        if (!$this->relationLoaded('providerBankAccount')) {
-            $this->load('providerBankAccount');
-        }
-        if (!$this->relationLoaded('providerEarnings')) {
-            $this->load('providerEarnings');
-        }
-
-        $earnings = $this->providerEarnings;
-
-        // Calculate totals from earnings
-        $totalGross = $earnings->sum('gross_amount');
-        $totalCommission = $earnings->sum('commission_amount');
-        $totalNet = $earnings->sum('net_amount');
-        $earningsCount = $earnings->count();
-
-        // Transform earnings to simpler format
-        $transformedEarnings = $earnings->map(function ($earning) {
-            return [
-                'id' => $earning->id,
-                'transaction_id' => $earning->payment_transaction_id,
-                'type' => $earning->payable_type,
-                'gross_amount' => number_format($earning->gross_amount, 2),
-                'commission' => number_format($earning->commission_amount, 2),
-                'net_amount' => number_format($earning->net_amount, 2),
-                'currency' => $earning->currency,
-                'date' => Carbon::parse($earning->created_at)->format('M j, Y'),
-                'disbursed_date' => Carbon::parse($earning->disbursed_at)->format('M j, Y'),
-            ];
-        });
-
-        // Group earnings by type
-        $earningsByType = $earnings->groupBy('payable_type')->map(function ($group) {
-            return [
-                'count' => $group->count(),
-                'total_amount' => $group->sum('gross_amount')
-            ];
-        });
-
         return [
-            'disbursement' => [
-                'id' => $this->id,
-                'reference' => $this->disbursement_id,
-                'status' => ucfirst($this->status),
-                'created_at' => Carbon::parse($this->created_at)->format('M j, Y H:i'),
-                'gross_amount' => number_format($this->gross_amount, 2),
-                'fee_amount' => number_format($this->fee_amount, 2),
-                'net_amount' => number_format($this->net_amount, 2),
-                'currency' => $this->user->preferences['currency'] ,
-                'payout_method' => $this->metadata['payout_method'] ?? 'unknown',
-                'earnings_count' => $earningsCount ?? 0,
+            'id' => $this->id,
+            'disbursement_id' => $this->disbursement_id,
+            'merchant_id' => $this->merchant_id,
+            'status' => $this->status,
+            'funding_source' => $this->funding_source,
+            'payout_method' => $this->payout_method,
+            'amounts' => [
+                'gross' => (float) $this->gross_amount,
+                'fee' => (float) $this->fee_amount,
+                'net' => (float) $this->net_amount,
+                'currency' => $this->currency,
             ],
-            'user' => [
-                'id' => $this->user->id,
-                'name' => $this->user->name,
-                'email' => $this->user->email,
-                'status' => ucfirst($this->user->status),
-                'joined_at' => Carbon::parse($this->user->created_at)->format('M j, Y'),
+            'description' => $this->description,
+            'external_reference' => $this->external_reference,
+            'failure_reason' => $this->failure_reason,
+            'wallet' => $this->wallet ? [
+                'id' => $this->wallet->id,
+                'wallet_id' => $this->wallet->wallet_id,
+                'name' => $this->wallet->name,
+                'currency' => $this->wallet->currency,
+            ] : null,
+            'beneficiary' => $this->beneficiary ? [
+                'id' => $this->beneficiary->id,
+                'beneficiary_id' => $this->beneficiary->beneficiary_id,
+                'name' => $this->beneficiary->name,
+                'currency' => $this->beneficiary->currency,
+                'country' => $this->beneficiary->country,
+            ] : null,
+            'batch' => $this->disbursementBatch ? [
+                'id' => $this->disbursementBatch->id,
+                'batch_id' => $this->disbursementBatch->batch_id,
+                'name' => $this->disbursementBatch->batch_name,
+            ] : null,
+            'timestamps' => [
+                'created_at' => $this->created_at?->toISOString(),
+                'processed_at' => $this->processed_at?->toISOString(),
+                'completed_at' => $this->completed_at?->toISOString(),
+                'failed_at' => $this->failed_at?->toISOString(),
+                'cancelled_at' => $this->cancelled_at?->toISOString(),
+                'estimated_arrival' => $this->estimated_arrival?->toISOString(),
             ],
-            'bank_account' => [
-                'bank_name' => $this->providerBankAccount->bank_name,
-                'account_holder' => $this->providerBankAccount->account_holder_name,
-                'account_type' => ucfirst($this->providerBankAccount->account_type),
-                'account_number' => $this->providerBankAccount->masked_account_number,
-                'routing_number' => $this->providerBankAccount->masked_routing_number,
-                'currency' => $this->providerBankAccount->currency,
-                'verification_status' => ucfirst($this->providerBankAccount->verification_status),
-                'verified_at' => Carbon::parse($this->providerBankAccount->verified_at)->format('M j, Y'),
+            'gateway' => [
+                'disbursement_id' => $this->gateway_disbursement_id,
+                'transaction_id' => $this->gateway_transaction_id,
             ],
-            'earnings_summary' => [
-                'total_gross' => number_format($totalGross, 2),
-                'total_commission' => number_format($totalCommission, 2),
-                'total_net' => number_format($totalNet, 2),
-                'by_type' => $earningsByType->toArray(),
-            ],
-            'earnings' => $transformedEarnings->toArray(),
+            'metadata' => $this->metadata,
         ];
     }
 
     /**
-     * Transform disbursement for admin view
+     * Transform for list view (lighter)
      */
-    public function transformDisbursements()
+    public function transformForList(): array
     {
         return [
             'id' => $this->id,
             'disbursement_id' => $this->disbursement_id,
             'status' => $this->status,
-            'failure_reason' => $this->failure_reason,
-            'timestamps' => [
-                'created_at' => $this->created_at->format('Y-m-d H:i:s'),
-                'processed_at' => optional($this->processed_at)->format('Y-m-d H:i:s'),
-                'completed_at' => optional($this->completed_at)->format('Y-m-d H:i:s'),
-            ],
-            'amounts' => [
-                'gross' => number_format($this->gross_amount, 2),
-                'fees' => number_format($this->fee_amount, 2),
-                'net' => number_format($this->net_amount, 2),
-                'currency' => $this->user->preferences['currency'] ?? 'KES',
-            ],
-            'user' => [
-                'id' => $this->user->id,
-                'name' => $this->user->name,
-                'email' => $this->user->email,
-            ],
-            'bank_account' => [
-                'bank_name' => $this->providerBankAccount->bank_name,
-                'account_number' => $this->providerBankAccount->masked_account_number,
-                'routing_number' => $this->providerBankAccount->masked_routing_number,
-            ],
-            'batch' => $this->disbursementBatch ? [
-                'id' => $this->disbursementBatch->id,
-                'batch_id' => $this->disbursementBatch->batch_id,
-                'name' => $this->disbursementBatch->batch_name,
-                'status' => $this->disbursementBatch->status,
-            ] : null,
-            'earnings' => [
-                'count' => $this->providerEarnings->count(),
-                'total_amount' => number_format($this->providerEarnings->sum('net_amount'), 2),
-            ],
-            'metadata' => $this->metadata,
+            'amount' => (float) $this->net_amount,
+            'currency' => $this->currency,
+            'payout_method' => $this->payout_method,
+            'beneficiary_name' => $this->beneficiary?->name,
+            'wallet_name' => $this->wallet?->name,
+            'created_at' => $this->created_at?->toISOString(),
+            'completed_at' => $this->completed_at?->toISOString(),
         ];
     }
 }

@@ -201,12 +201,15 @@ class WalletService extends BaseService
 
         return DB::transaction(function () use ($wallet, $amount, $type, $sourceModel, $description) {
             $balanceBefore = $wallet->available_balance;
+            $balanceAfter = $balanceBefore + $amount;
 
             // Create transaction record
             $transaction = WalletTransaction::createTransaction($wallet, [
                 'type' => $type,
                 'direction' => 'credit',
                 'amount' => $amount,
+                'balance_before' => $balanceBefore,
+                'balance_after' => $balanceAfter,
                 'status' => 'completed',
                 'source_type' => $sourceModel ? get_class($sourceModel) : null,
                 'source_id' => $sourceModel?->id,
@@ -289,7 +292,7 @@ class WalletService extends BaseService
      */
     public function holdFunds(string $walletId, float $amount, string $reason, string $referenceId = null): WalletTransaction
     {
-        $wallet = $this->getWallet($walletId);
+        $wallet = $this->getWalletById($walletId);
 
         if (!$wallet) {
             throw new \Exception('Wallet not found');
@@ -301,12 +304,18 @@ class WalletService extends BaseService
 
         return DB::transaction(function () use ($wallet, $amount, $reason, $referenceId) {
             $balanceBefore = $wallet->available_balance;
+            $balanceAfter = $wallet->available_balance;
 
             // Create transaction record
+            //NB: NEED TO VERIFY AND CHECK balance* and the source
             $transaction = WalletTransaction::createTransaction($wallet, [
                 'type' => 'hold',
                 'direction' => 'debit',
                 'amount' => $amount,
+                'balance_before' => $balanceBefore,
+                'balance_after' => $balanceAfter,
+                'source_type' => \App\Models\Disbursement::class,
+                'source_id' => $wallet->id,
                 'status' => 'completed',
                 'reference' => $referenceId,
                 'description' => $reason,
@@ -381,7 +390,7 @@ class WalletService extends BaseService
      */
     public function canDebit(string $walletId, float $amount): array
     {
-        $wallet = $this->getWallet($walletId);
+        $wallet = $this->getWalletById($walletId);
 
         if (!$wallet) {
             return ['allowed' => false, 'reason' => 'Wallet not found'];

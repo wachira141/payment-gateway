@@ -118,6 +118,7 @@ class PaymentProcessorService
 
             return array_merge($result, [
                 'transaction_id' => $transaction->transaction_id,
+                'transaction' => $transaction
             ]);
         } catch (\Exception $e) {
             Log::error('Payment processing error: ' . $e->getMessage());
@@ -134,7 +135,7 @@ class PaymentProcessorService
      */
     private function processPaymentByGateway($gateway, $transaction, $data)
     {
-        switch ($gateway->type) {
+        switch ($gateway->code) {
             case 'stripe':
                 return $this->processStripePayment($transaction, $data);
             case 'mpesa':
