@@ -120,7 +120,7 @@ class ChargeService extends BaseService
             $this->balanceService->addToBalance(
                 $merchantId,
                 $charge['currency'],
-                $charge['amount_captured'] - $charge['application_fee_amount'],
+                $charge['amount_captured'] - $charge['fee_amount'],
                 'charge_succeeded',
                 $chargeId
             );

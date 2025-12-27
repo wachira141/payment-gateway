@@ -403,8 +403,9 @@ class PaymentIntentService
 
     /**
      * Handle successful payment intent by creating charge and updating ledger
+     * Returns the created charge for platform earning recording
      */
-    public function handleSuccessfulPaymentIntent($transaction, string $gatewayType, array $feeCalculation): void
+    public function handleSuccessfulPaymentIntent($transaction, string $gatewayType, array $feeCalculation): ?\App\Models\Charge
     {
         try {
             $paymentIntent = \App\Models\PaymentIntent::find($transaction->payable_id);
@@ -414,7 +415,7 @@ class PaymentIntentService
                     'transaction_id' => $transaction->id,
                     'payable_id' => $transaction->payable_id
                 ]);
-                return;
+                return null;
             }
 
             // Create charge from successful payment intent
@@ -429,16 +430,16 @@ class PaymentIntentService
                 'connector_name' => $gatewayType,
                 'connector_charge_id' => $transaction->gateway_transaction_id,
                 'connector_response' => $transaction->gateway_response ?? [],
-                'fee_amount' => 0, // Will be calculated by ledger service
+                'fee_amount' => (int) round($feeCalculation['total_fees'] * 100),
                 'captured' => true,
                 'captured_at' => now(),
                 'gateway_code' => $transaction->gateway_code,
-                'gateway_processing_fee' => 0, // Will be calculated by ledger service
-                'platform_application_fee' => 0, // Will be calculated by ledger service
+                'gateway_processing_fee' => (int) round($feeCalculation['processing_fee'] * 100),
+                'platform_application_fee' => (int) round($feeCalculation['application_fee'] * 100),
             ]);
 
             // Record payment in ledger and update merchant balance
-            $this->ledgerService->recordPayment($charge, $feeCalculation);
+            $this->ledgerService->recordPayment($charge);
 
             Log::info('Charge created and ledger updated for successful payment intent', [
                 'charge_id' => $charge->charge_id,
@@ -447,6 +448,7 @@ class PaymentIntentService
                 'amount' => $charge->amount,
                 'currency' => $charge->currency,
             ]);
+            return $charge;
         } catch (\Exception $e) {
             Log::error('Failed to handle successful payment intent', [
                 'transaction_id' => $transaction->id,
@@ -454,6 +456,7 @@ class PaymentIntentService
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+            return null;
         }
     }
 

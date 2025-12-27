@@ -25,7 +25,7 @@ class LedgerEntry extends BaseModel
     ];
 
     protected $casts = [
-        'amount' => 'decimal:4',
+        'amount' => 'integer',
         'metadata' => 'array',
         'posted_at' => 'datetime',
     ];

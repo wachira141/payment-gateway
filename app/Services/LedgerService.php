@@ -6,6 +6,7 @@ use App\Models\Charge;
 use App\Models\LedgerEntry;
 use App\Models\Refund;
 use App\Models\MerchantBalance;
+use App\Helpers\CurrencyHelper;
 
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -19,35 +20,42 @@ class LedgerService
     {
         $this->gatewayPricingService = $gatewayPricingService;
     }
-    /**
+   
+   /**
      * Record successful payment in ledger using gateway-based pricing
+     * 
+     * NOTE: All monetary amounts on the Charge model are already stored in MINOR UNITS.
+     * Do NOT call CurrencyHelper::toMinorUnits() on charge amounts.
      */
-    public function recordPayment(Charge $charge, array $feeCalculation)
+    public function recordPayment(Charge $charge)
     {
         $merchant = $charge->merchant;
-        $grossAmount = $charge->amount;
+        $currency = $charge->currency;
 
-        // Get gateway-specific fee breakdown
+        // All amounts are already in minor units on the Charge model
+        $grossAmount = (int) $charge->amount;
+        $processingFee = (int) ($charge->gateway_processing_fee ?? 0);
+        $applicationFee = (int) ($charge->platform_application_fee ?? 0);
+        $totalFees = $processingFee + $applicationFee;
+        $netAmount = $grossAmount - $totalFees;
+
+        // Get gateway info for metadata
         $gatewayCode = $charge->gateway_code ?? 'unknown';
         $paymentMethodType = $charge->payment_method_type ?? 'unknown';
 
-        $processingFee = $feeCalculation['processing_fee'];
-        $applicationFee = $feeCalculation['application_fee'];
-        $totalFees = $feeCalculation['total_fees'];
-        $netAmount = $grossAmount - $totalFees;
-
-        DB::transaction(function () use ($merchant, $charge, $grossAmount, $processingFee, $applicationFee, $totalFees, $netAmount, $gatewayCode, $paymentMethodType) {
+        DB::transaction(function () use ($merchant, $charge, $grossAmount, $processingFee, $applicationFee, $netAmount, $gatewayCode, $paymentMethodType, $currency) {
+            // Convert to major units only for metadata display
             $metadata = [
                 'gateway_code' => $gatewayCode,
                 'payment_method_type' => $paymentMethodType,
                 'fee_breakdown' => [
-                    'processing_fee' => $processingFee,
-                    'application_fee' => $applicationFee,
-                    'total_fees' => $totalFees
+                    'processing_fee' => CurrencyHelper::fromMinorUnits($processingFee, $currency),
+                    'application_fee' => CurrencyHelper::fromMinorUnits($applicationFee, $currency),
+                    'total_fees' => CurrencyHelper::fromMinorUnits($processingFee + $applicationFee, $currency)
                 ]
             ];
 
-            // Create ledger entries
+            // Create ledger entries - amounts already in minor units
             LedgerEntry::createTransaction(
                 $merchant->id,
                 $charge,
@@ -57,7 +65,7 @@ class LedgerService
                         'account_name' => 'merchant_balance_pending',
                         'entry_type' => 'debit',
                         'amount' => $netAmount,
-                        'currency' => $charge->currency,
+                        'currency' => $currency,
                         'description' => "Payment received - {$charge->charge_id}",
                         'metadata' => $metadata,
                     ],
@@ -66,7 +74,7 @@ class LedgerService
                         'account_name' => 'gateway_processing_fees',
                         'entry_type' => 'debit',
                         'amount' => $processingFee,
-                        'currency' => $charge->currency,
+                        'currency' => $currency,
                         'description' => "Gateway processing fee - {$charge->charge_id} ({$gatewayCode})",
                         'metadata' => $metadata,
                     ],
@@ -75,7 +83,7 @@ class LedgerService
                         'account_name' => 'platform_application_fees',
                         'entry_type' => 'debit',
                         'amount' => $applicationFee,
-                        'currency' => $charge->currency,
+                        'currency' => $currency,
                         'description' => "Platform application fee - {$charge->charge_id}",
                         'metadata' => $metadata,
                     ],
@@ -84,59 +92,61 @@ class LedgerService
                         'account_name' => 'payment_processing_revenue',
                         'entry_type' => 'credit',
                         'amount' => $grossAmount,
-                        'currency' => $charge->currency,
+                        'currency' => $currency,
                         'description' => "Payment processed - {$charge->charge_id} ({$gatewayCode}/{$paymentMethodType})",
                         'metadata' => $metadata,
                     ],
                 ]
             );
 
-            // Update merchant balance - add net amount to pending
-            $balance = MerchantBalance::findByMerchantAndCurrency($merchant->id, $charge->currency);
-            //if not exists, create it
+            // Update merchant balance - add net amount (already in minor units) to pending
+            $balance = MerchantBalance::findByMerchantAndCurrency($merchant->id, $currency);
             if (!$balance) {
-                $balance = MerchantBalance::createIfNotExists($merchant->id, $charge->currency);
+                $balance = MerchantBalance::createIfNotExists($merchant->id, $currency);
             }
 
             $balance->creditPending($netAmount);
         });
-
-        // Update charge with calculated fees for future reference
-        $charge->update([
-            'fee_amount' => $totalFees,
-            'gateway_processing_fee' => $processingFee,
-            'platform_application_fee' => $applicationFee,
-        ]);
     }
+
 
     /**
      * Record refund in ledger with gateway-aware fee calculations
+     * 
+     * NOTE: All monetary amounts on the Refund and Charge models are already stored in MINOR UNITS.
+     * Do NOT call CurrencyHelper::toMinorUnits() on these amounts.
      */
     public function recordRefund(Refund $refund)
     {
         $charge = $refund->charge;
         $merchant = $charge->merchant;
-        $refundAmount = $refund->amount;
+        $currency = $refund->currency;
 
-        // Calculate proportional fee refund based on original gateway fees
-        $refundRatio = $refund->amount / $charge->amount;
-        $processingFeeRefund = ($charge->gateway_processing_fee ?? 0) * $refundRatio;
-        $applicationFeeRefund = ($charge->platform_application_fee ?? 0) * $refundRatio;
+        // All amounts are already in minor units
+        $refundAmount = (int) $refund->amount;
+        $chargeAmount = (int) $charge->amount;
+
+        // Calculate proportional fee refund based on original gateway fees (already in minor units)
+        $refundRatio = $chargeAmount > 0 ? $refundAmount / $chargeAmount : 0;
+        $processingFeeRefund = (int) round(($charge->gateway_processing_fee ?? 0) * $refundRatio);
+        $applicationFeeRefund = (int) round(($charge->platform_application_fee ?? 0) * $refundRatio);
         $totalFeeRefund = $processingFeeRefund + $applicationFeeRefund;
+        $netRefund = $refundAmount - $totalFeeRefund;
 
         $gatewayCode = $charge->gateway_code ?? 'unknown';
         $paymentMethodType = $charge->payment_method_type ?? 'unknown';
 
-        DB::transaction(function () use ($merchant, $refund, $charge, $refundAmount, $processingFeeRefund, $applicationFeeRefund, $totalFeeRefund, $gatewayCode, $paymentMethodType) {
+        DB::transaction(function () use ($merchant, $refund, $charge, $refundAmount, $processingFeeRefund, $applicationFeeRefund, $netRefund, $gatewayCode, $paymentMethodType, $refundRatio, $totalFeeRefund, $currency) {
+            // Convert to major units only for metadata display
             $metadata = [
                 'gateway_code' => $gatewayCode,
                 'payment_method_type' => $paymentMethodType,
                 'original_charge_id' => $charge->id,
-                'refund_ratio' => $refund->amount / $charge->amount,
+                'refund_ratio' => $refundRatio,
                 'fee_refund_breakdown' => [
-                    'processing_fee_refund' => $processingFeeRefund,
-                    'application_fee_refund' => $applicationFeeRefund,
-                    'total_fee_refund' => $totalFeeRefund
+                    'processing_fee_refund' => CurrencyHelper::fromMinorUnits($processingFeeRefund, $currency),
+                    'application_fee_refund' => CurrencyHelper::fromMinorUnits($applicationFeeRefund, $currency),
+                    'total_fee_refund' => CurrencyHelper::fromMinorUnits($totalFeeRefund, $currency)
                 ]
             ];
 
@@ -149,7 +159,7 @@ class LedgerService
                         'account_name' => 'payment_processing_revenue',
                         'entry_type' => 'debit',
                         'amount' => $refundAmount,
-                        'currency' => $refund->currency,
+                        'currency' => $currency,
                         'description' => "Refund processed - {$refund->refund_id} ({$gatewayCode})",
                         'metadata' => $metadata,
                     ],
@@ -157,8 +167,8 @@ class LedgerService
                         'account_type' => 'assets',
                         'account_name' => 'merchant_balance_available',
                         'entry_type' => 'credit',
-                        'amount' => $refundAmount - $totalFeeRefund,
-                        'currency' => $refund->currency,
+                        'amount' => $netRefund,
+                        'currency' => $currency,
                         'description' => "Refund deducted from balance - {$refund->refund_id}",
                         'metadata' => $metadata,
                     ],
@@ -167,7 +177,7 @@ class LedgerService
                         'account_name' => 'gateway_processing_fees',
                         'entry_type' => 'credit',
                         'amount' => $processingFeeRefund,
-                        'currency' => $refund->currency,
+                        'currency' => $currency,
                         'description' => "Processing fee refund - {$refund->refund_id}",
                         'metadata' => $metadata,
                     ],
@@ -176,35 +186,39 @@ class LedgerService
                         'account_name' => 'platform_application_fees',
                         'entry_type' => 'credit',
                         'amount' => $applicationFeeRefund,
-                        'currency' => $refund->currency,
+                        'currency' => $currency,
                         'description' => "Application fee refund - {$refund->refund_id}",
                         'metadata' => $metadata,
                     ],
                 ]
             );
 
-            // Update merchant balance - deduct refund from available balance
-            $balance = MerchantBalance::findByMerchantAndCurrency($merchant->id, $refund->currency);
+            // Update merchant balance - deduct refund (already in minor units) from available balance
+            $balance = MerchantBalance::findByMerchantAndCurrency($merchant->id, $currency);
             if ($balance) {
-                $balance->debitAvailable($refundAmount - $totalFeeRefund);
+                $balance->debitAvailable($netRefund);
             }
         });
     }
 
     /**
      * Record balance settlement (moving from pending to available)
+     * Note: $amount should already be in minor units when called from BalanceService
      */
-    public function recordBalanceSettlement(MerchantBalance $balance, float $amount)
+    public function recordBalanceSettlement(MerchantBalance $balance, int $amountMinor)
     {
-        DB::transaction(function () use ($balance, $amount) {
+        $currency = $balance->currency;
+        $amountMajor = CurrencyHelper::fromMinorUnits($amountMinor, $currency);
+
+        DB::transaction(function () use ($balance, $amountMinor, $amountMajor, $currency) {
             $metadata = [
                 'settlement_type' => 'pending_to_available',
                 'merchant_id' => $balance->merchant_id,
-                'currency' => $balance->currency,
-                'amount_settled' => $amount
+                'currency' => $currency,
+                'amount_settled' => $amountMajor
             ];
 
-            // Create ledger entries for the settlement
+            // Create ledger entries for the settlement (amounts in minor units)
             LedgerEntry::createTransaction(
                 $balance->merchant_id,
                 $balance, // Use balance as reference
@@ -213,8 +227,8 @@ class LedgerService
                         'account_type' => 'assets',
                         'account_name' => 'merchant_balance_pending',
                         'entry_type' => 'credit',
-                        'amount' => $amount,
-                        'currency' => $balance->currency,
+                        'amount' => $amountMinor,
+                        'currency' => $currency,
                         'description' => "Balance settlement - moved to available",
                         'metadata' => $metadata,
                     ],
@@ -222,18 +236,19 @@ class LedgerService
                         'account_type' => 'assets',
                         'account_name' => 'merchant_balance_available',
                         'entry_type' => 'debit',
-                        'amount' => $amount,
-                        'currency' => $balance->currency,
+                        'amount' => $amountMinor,
+                        'currency' => $currency,
                         'description' => "Balance settlement - from pending",
                         'metadata' => $metadata,
                     ],
                 ]
             );
 
-            // Update the merchant balance
-            $balance->movePendingToAvailable($amount);
+            // Update the merchant balance (already in minor units)
+            $balance->movePendingToAvailable($amountMinor);
         });
     }
+
 
     /**
      * Get account balance
@@ -355,7 +370,7 @@ class LedgerService
         return $balances;
     }
 
-   /**
+    /**
      * Get account balances for all currencies with currency summary
      */
     public function getAllAccountBalances($merchantId)
@@ -368,16 +383,16 @@ class LedgerService
 
         $allBalances = [];
         $currencySummary = [];
-        
+
         foreach ($currencies as $currency) {
             $currencyBalances = $this->getAccountBalancesByCurrency($merchantId, $currency);
             $allBalances = array_merge($allBalances, $currencyBalances);
-            
+
             // Categorize balances
             $merchantBalances = [];
             $feeBalances = [];
             $revenueBalances = [];
-            
+
             foreach ($currencyBalances as $balance) {
                 switch ($balance['account_type']) {
                     case 'merchant_balance_available':
@@ -393,13 +408,13 @@ class LedgerService
                         break;
                 }
             }
-            
+
             // Calculate balances by category
             $merchantNetBalance = array_sum(array_column($merchantBalances, 'balance'));
             $totalFees = array_sum(array_column($feeBalances, 'balance'));
             $totalRevenue = array_sum(array_column($revenueBalances, 'balance'));
             $totalAccountingBalance = array_sum(array_column($currencyBalances, 'balance'));
-            
+
             $currencySummary[$currency] = [
                 'currency' => $currency,
                 'merchant_net_balance' => $merchantNetBalance,
@@ -426,68 +441,99 @@ class LedgerService
     /**
      * Get assets accounts summary for financial reports
      */
+    // public function getAssetAccountsSummary($merchantId, $currency = null)
+    // {
+    //     $query = LedgerEntry::where('merchant_id', $merchantId)
+    //         ->where('account_type', 'assets');
+
+    //     if ($currency && $currency !== 'all') {
+    //         $query->where('currency', $currency);
+    //     }
+
+    //     $entries = $query->get()->groupBy('account_name');
+    //     $assets = [];
+
+    //     foreach ($entries as $accountName => $accountEntries) {
+    //         $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
+    //         $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
+    //         $balance = $debits - $credits; // Assets: debits increase balance
+
+    //         $assets[$accountName] = [
+    //             'debits' => $debits,
+    //             'credits' => $credits,
+    //             'balance' => $balance,
+    //             'entry_count' => $accountEntries->count(),
+    //             'currencies' => $accountEntries->pluck('currency')->unique()->values()->toArray()
+    //         ];
+    //     }
+
+    //     return $assets;
+    // }
     public function getAssetAccountsSummary($merchantId, $currency = null)
     {
-        $query = LedgerEntry::where('merchant_id', $merchantId)
-            ->where('account_type', 'assets');
+        $assetAccounts = [
+            'merchant_balance_available',
+            'merchant_balance_pending',
+            'gateway_processing_fees',
+            'platform_application_fees'
+        ];
 
-        if ($currency && $currency !== 'all') {
-            $query->where('currency', $currency);
+        $summary = [];
+        foreach ($assetAccounts as $accountName) {
+            $balance = $this->getAccountBalance($merchantId, 'assets', $accountName, $currency);
+            $summary[$accountName] = $balance;
         }
 
-        $entries = $query->get()->groupBy('account_name');
-        $assets = [];
-
-        foreach ($entries as $accountName => $accountEntries) {
-            $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
-            $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
-            $balance = $debits - $credits; // Assets: debits increase balance
-
-            $assets[$accountName] = [
-                'debits' => $debits,
-                'credits' => $credits,
-                'balance' => $balance,
-                'entry_count' => $accountEntries->count(),
-                'currencies' => $accountEntries->pluck('currency')->unique()->values()->toArray()
-            ];
-        }
-
-        return $assets;
+        return $summary;
     }
 
     /**
      * Get revenue accounts summary for financial reports
      */
+    // public function getRevenueAccountsSummary($merchantId, $currency = null)
+    // {
+    //     $query = LedgerEntry::where('merchant_id', $merchantId)
+    //         ->where('account_type', 'revenue');
+
+    //     if ($currency && $currency !== 'all') {
+    //         $query->where('currency', $currency);
+    //     }
+
+    //     $entries = $query->get()->groupBy('account_name');
+    //     $revenue = [];
+
+    //     foreach ($entries as $accountName => $accountEntries) {
+    //         $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
+    //         $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
+    //         $balance = $credits - $debits; // Revenue: credits increase balance
+
+    //         $revenue[$accountName] = [
+    //             'debits' => $debits,
+    //             'credits' => $credits,
+    //             'balance' => $balance,
+    //             'entry_count' => $accountEntries->count(),
+    //             'currencies' => $accountEntries->pluck('currency')->unique()->values()->toArray()
+    //         ];
+    //     }
+
+    //     return $revenue;
+    // }
     public function getRevenueAccountsSummary($merchantId, $currency = null)
     {
-        $query = LedgerEntry::where('merchant_id', $merchantId)
-            ->where('account_type', 'revenue');
+        $revenueAccounts = [
+            'payment_processing_revenue'
+        ];
 
-        if ($currency && $currency !== 'all') {
-            $query->where('currency', $currency);
+        $summary = [];
+        foreach ($revenueAccounts as $accountName) {
+            $balance = $this->getAccountBalance($merchantId, 'revenue', $accountName, $currency);
+            $summary[$accountName] = $balance;
         }
 
-        $entries = $query->get()->groupBy('account_name');
-        $revenue = [];
-
-        foreach ($entries as $accountName => $accountEntries) {
-            $debits = $accountEntries->where('entry_type', 'debit')->sum('amount');
-            $credits = $accountEntries->where('entry_type', 'credit')->sum('amount');
-            $balance = $credits - $debits; // Revenue: credits increase balance
-
-            $revenue[$accountName] = [
-                'debits' => $debits,
-                'credits' => $credits,
-                'balance' => $balance,
-                'entry_count' => $accountEntries->count(),
-                'currencies' => $accountEntries->pluck('currency')->unique()->values()->toArray()
-            ];
-        }
-
-        return $revenue;
+        return $summary;
     }
 
-     /**
+    /**
      * Get merchant balances summary (only merchant-facing balances)
      */
     public function getMerchantBalancesSummary($merchantId)
@@ -500,7 +546,7 @@ class LedgerService
 
         $merchantBalances = [];
         $currencySummary = [];
-        
+
         foreach ($currencies as $currency) {
             // Only include merchant-facing balances
             $merchantAccountTypes = [
@@ -520,12 +566,12 @@ class LedgerService
             }
 
             $merchantBalances = array_merge($merchantBalances, $balances);
-            
+
             // Calculate merchant net balance (available + pending)
             $availableBalance = $balances[0]['balance'] ?? 0;
             $pendingBalance = $balances[1]['balance'] ?? 0;
             $merchantNetBalance = $availableBalance + $pendingBalance;
-            
+
             $currencySummary[$currency] = [
                 'currency' => $currency,
                 'merchant_net_balance' => $merchantNetBalance,
@@ -543,6 +589,8 @@ class LedgerService
             'available_currencies' => $currencies
         ];
     }
+
+    
 
     // ==================== WALLET LEDGER ENTRIES ====================
 

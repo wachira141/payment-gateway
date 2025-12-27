@@ -16,7 +16,7 @@ class PaymentGatewaySeeder extends Seeder
             [
                 'name' => 'Stripe',
                 'code' => 'stripe',
-                'type' => 'stripe',
+                'type' => 'card',
                 'supported_countries' => [
                     'US', 'CA', 'GB', 'AU', 'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 
                     'AT', 'CH', 'SE', 'NO', 'DK', 'FI', 'IE', 'PT', 'LU', 'CZ', 
@@ -43,7 +43,7 @@ class PaymentGatewaySeeder extends Seeder
             [
                 'name' => 'M-Pesa',
                 'code' => 'mpesa',
-                'type' => 'mpesa',
+                'type' => 'mobile_money',
                 'supported_countries' => [
                     'KE', 'TZ', 'UG', 'RW', 'CD', 'GH', 'ZA', 'MZ', 'EG', 'ET'
                 ],
@@ -65,7 +65,7 @@ class PaymentGatewaySeeder extends Seeder
             [
                 'name' => 'Telebirr',
                 'code' => 'telebirr',
-                'type' => 'telebirr',
+                'type' => 'mobile_money',
                 'supported_countries' => ['ET'],
                 'supported_currencies' => ['ETB'],
                 'icon' => '🇪🇹',

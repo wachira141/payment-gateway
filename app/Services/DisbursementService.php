@@ -10,6 +10,7 @@ use App\Services\WalletService;
 use App\Services\BeneficiaryService;
 use App\Services\GatewayPricingService;
 use App\Services\PayoutMethodService;
+use App\Services\PlatformEarningService;
 use App\Jobs\ProcessDisbursementJob;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -18,21 +19,24 @@ use Carbon\Carbon;
 
 class DisbursementService extends BaseService
 {
-    protected WalletService $walletService;
-    protected BeneficiaryService $beneficiaryService;
+    protected PlatformEarningService $platformEarningService;
     protected GatewayPricingService $gatewayPricingService;
     protected PayoutMethodService $payoutMethodService;
+    protected BeneficiaryService $beneficiaryService;
+    protected WalletService $walletService;
 
     public function __construct(
         WalletService $walletService,
         BeneficiaryService $beneficiaryService,
         GatewayPricingService $gatewayPricingService,
-        PayoutMethodService $payoutMethodService
+        PayoutMethodService $payoutMethodService,
+        PlatformEarningService $platformEarningService
     ) {
         $this->walletService = $walletService;
         $this->beneficiaryService = $beneficiaryService;
         $this->gatewayPricingService = $gatewayPricingService;
         $this->payoutMethodService = $payoutMethodService;
+        $this->platformEarningService = $platformEarningService;
     }
 
     // ==================== DISBURSEMENT CREATION ====================
@@ -69,9 +73,9 @@ class DisbursementService extends BaseService
                 throw new \Exception("Currency mismatch: Wallet currency ({$wallet->currency}) differs from beneficiary currency ({$beneficiary['currency']})");
             }
 
-            // Calculate fee
-            $feeAmount = $this->calculateDisbursementFee($merchantId, $beneficiary, $amount, $wallet->currency);
-            $totalDebit = $amount + $feeAmount;
+            // Calculate fee with detailed breakdown
+            $feeDetails = $this->calculateDisbursementFeeWithDetails($merchantId, $beneficiary, $amount, $wallet->currency);
+            $totalDebit = $amount + $feeDetails['total_fees'];
 
             // Check wallet balance
             $canDebit = $this->walletService->canDebit($walletId, $totalDebit);
@@ -93,7 +97,11 @@ class DisbursementService extends BaseService
                 'funding_source' => 'wallet',
                 'payout_method' => $payoutMethod,
                 'gross_amount' => $amount,
-                'fee_amount' => $feeAmount,
+                'fee_amount' => $feeDetails['total_fees'],
+                'gateway_processing_fee' => $feeDetails['gateway_processing_fee'],
+                'platform_application_fee' => $feeDetails['platform_application_fee'],
+                'gateway_code' => $feeDetails['gateway_code'],
+                'payout_method_type' => $feeDetails['payout_method_type'],
                 'currency' => $wallet->currency,
                 'description' => $options['description'] ?? null,
                 'external_reference' => $options['external_reference'] ?? null,
@@ -101,8 +109,17 @@ class DisbursementService extends BaseService
                 'metadata' => array_merge($options['metadata'] ?? [], [
                     'beneficiary_name' => $beneficiary['name'],
                     'wallet_name' => $wallet->name,
+                    'fee_breakdown' => $feeDetails['breakdown'] ?? null,
                 ]),
             ]);
+
+
+            // Record platform earning for the disbursement
+            $this->platformEarningService->recordDisbursementEarning(
+                $disbursement,
+                $feeDetails['fee_calculation'] ?? $feeDetails,
+                (int) ($feeDetails['gateway_processing_fee'] * 100) // Convert to cents for gateway cost
+            );
 
             // Hold funds in wallet
             $this->walletService->holdFunds(
@@ -115,19 +132,28 @@ class DisbursementService extends BaseService
             // Dispatch processing job
             ProcessDisbursementJob::dispatch($disbursement);
 
-            Log::info("Created disbursement", [
+            Log::info("Created disbursement with platform earning", [
                 'disbursement_id' => $disbursement->disbursement_id,
                 'merchant_id' => $merchantId,
                 'amount' => $amount,
-                'fee' => $feeAmount,
+                'fee' => $feeDetails['total_fees'],
+                'gateway_fee' => $feeDetails['gateway_processing_fee'],
+                'platform_fee' => $feeDetails['platform_application_fee'],
             ]);
 
             return $disbursement->fresh(['wallet', 'beneficiary']);
         });
     }
 
+   
     /**
-     * Create batch disbursement
+     * Create batch disbursement with detailed fee tracking and platform earnings
+     * 
+     * @param string $merchantId Merchant ID
+     * @param string $walletId Wallet ID to fund disbursements from
+     * @param array $disbursementsData Array of disbursement items
+     * @param array $options Optional batch settings
+     * @return DisbursementBatch
      */
     public function createBatchDisbursement(
         string $merchantId,
@@ -146,9 +172,11 @@ class DisbursementService extends BaseService
                 throw new \Exception('Wallet is not active');
             }
 
-            // Calculate total required
+            // Calculate total required with detailed fee breakdown
             $totalAmount = 0;
             $totalFees = 0;
+            $totalGatewayFees = 0;
+            $totalPlatformFees = 0;
             $validatedItems = [];
 
             foreach ($disbursementsData as $index => $item) {
@@ -162,15 +190,18 @@ class DisbursementService extends BaseService
                     throw new \Exception("Currency mismatch at index {$index}: Wallet currency ({$wallet->currency}) differs from beneficiary currency ({$beneficiary['currency']})");
                 }
 
-                $fee = $this->calculateDisbursementFee($merchantId, $beneficiary, $item['amount'], $wallet->currency);
+                // Use detailed fee calculation instead of simple fee
+                $feeDetails = $this->calculateDisbursementFeeWithDetails($merchantId, $beneficiary, $item['amount'], $wallet->currency);
                 
                 $totalAmount += $item['amount'];
-                $totalFees += $fee;
+                $totalFees += $feeDetails['total_fees'];
+                $totalGatewayFees += $feeDetails['gateway_processing_fee'];
+                $totalPlatformFees += $feeDetails['platform_application_fee'];
 
                 $validatedItems[] = [
                     'beneficiary' => $beneficiary,
                     'amount' => $item['amount'],
-                    'fee' => $fee,
+                    'fee_details' => $feeDetails, // Store full fee breakdown
                     'description' => $item['description'] ?? null,
                     'external_reference' => $item['external_reference'] ?? null,
                 ];
@@ -200,11 +231,13 @@ class DisbursementService extends BaseService
                 $batch->batch_id
             );
 
-            // Create individual disbursements
+            // Create individual disbursements with detailed fee tracking
             foreach ($validatedItems as $item) {
                 $payoutMethod = $this->determinePayoutMethod($item['beneficiary']);
                 $estimatedArrival = $this->calculateEstimatedArrival($item['beneficiary'], $payoutMethod);
+                $feeDetails = $item['fee_details'];
 
+                // Create disbursement with new fee columns
                 $disbursement = Disbursement::createDisbursement([
                     'merchant_id' => $merchantId,
                     'wallet_id' => $wallet->id,
@@ -213,7 +246,11 @@ class DisbursementService extends BaseService
                     'funding_source' => 'wallet',
                     'payout_method' => $payoutMethod,
                     'gross_amount' => $item['amount'],
-                    'fee_amount' => $item['fee'],
+                    'fee_amount' => $feeDetails['total_fees'],
+                    'gateway_processing_fee' => $feeDetails['gateway_processing_fee'],
+                    'platform_application_fee' => $feeDetails['platform_application_fee'],
+                    'gateway_code' => $feeDetails['gateway_code'],
+                    'payout_method_type' => $feeDetails['payout_method_type'],
                     'currency' => $wallet->currency,
                     'description' => $item['description'],
                     'external_reference' => $item['external_reference'],
@@ -221,8 +258,16 @@ class DisbursementService extends BaseService
                     'metadata' => [
                         'batch_id' => $batch->batch_id,
                         'beneficiary_name' => $item['beneficiary']['name'],
+                        'fee_breakdown' => $feeDetails['breakdown'] ?? null,
                     ],
                 ]);
+
+                // Record platform earning for each disbursement in the batch
+                $this->platformEarningService->recordDisbursementEarning(
+                    $disbursement,
+                    $feeDetails['fee_calculation'] ?? $feeDetails,
+                    (int) ($feeDetails['gateway_processing_fee'] * 100) // Convert to cents for gateway cost
+                );
 
                 // Dispatch processing job for each disbursement
                 ProcessDisbursementJob::dispatch($disbursement);
@@ -232,12 +277,14 @@ class DisbursementService extends BaseService
             $batch->recalculateTotals();
             $batch->markAsProcessing();
 
-            Log::info("Created batch disbursement", [
+            Log::info("Created batch disbursement with platform earnings", [
                 'batch_id' => $batch->batch_id,
                 'merchant_id' => $merchantId,
                 'count' => count($disbursementsData),
                 'total_amount' => $totalAmount,
                 'total_fees' => $totalFees,
+                'total_gateway_fees' => $totalGatewayFees,
+                'total_platform_fees' => $totalPlatformFees,
             ]);
 
             return $batch->fresh(['wallet', 'disbursements']);
@@ -376,28 +423,62 @@ class DisbursementService extends BaseService
 
     // ==================== HELPER METHODS ====================
 
-    /**
+   /**
      * Calculate disbursement fee
      */
     protected function calculateDisbursementFee(string $merchantId, array $beneficiary, float $amount, string $currency): float
     {
+        $feeDetails = $this->calculateDisbursementFeeWithDetails($merchantId, $beneficiary, $amount, $currency);
+        return $feeDetails['total_fees'];
+    }
+
+    /**
+     * Calculate disbursement fee with detailed breakdown
+     */
+    protected function calculateDisbursementFeeWithDetails(
+        string $merchantId,
+        array $beneficiary,
+        float $amount,
+        string $currency
+    ): array {
         try {
-            $feeCalculation = $this->gatewayPricingService->calculatePayoutFees(
+            $feeCalculation = $this->gatewayPricingService->calculateDisbursementFees(
                 $merchantId,
                 $beneficiary,
                 (int) ($amount * 100), // Convert to cents
                 $currency
             );
 
-            return (float) ($feeCalculation['total_fees'] / 100); // Convert back from cents
+            return [
+                'gateway_processing_fee' => (float) ($feeCalculation['gateway_processing_fee'] / 100),
+                'platform_application_fee' => (float) ($feeCalculation['platform_application_fee'] / 100),
+                'total_fees' => (float) ($feeCalculation['total_fees'] / 100),
+                'gateway_code' => $feeCalculation['gateway_code'],
+                'payout_method_type' => $feeCalculation['payment_method_type'],
+                'fee_calculation' => $feeCalculation,
+                'breakdown' => $feeCalculation['breakdown'] ?? null,
+            ];
         } catch (\Exception $e) {
             Log::warning("Fee calculation failed, using default", [
                 'error' => $e->getMessage(),
             ]);
             // Default fee calculation
-            return $amount * 0.01; // 1% default fee
+            $defaultFee = $amount * 0.01;
+            $gatewayFee = $defaultFee * 0.7; // 70% to gateway
+            $platformFee = $defaultFee * 0.3; // 30% platform
+
+            return [
+                'gateway_processing_fee' => $gatewayFee,
+                'platform_application_fee' => $platformFee,
+                'total_fees' => $defaultFee,
+                'gateway_code' => 'unknown',
+                'payout_method_type' => $beneficiary['type'] ?? 'unknown',
+                'fee_calculation' => ['fallback' => true],
+                'breakdown' => null,
+            ];
         }
     }
+
 
     /**
      * Determine payout method from beneficiary

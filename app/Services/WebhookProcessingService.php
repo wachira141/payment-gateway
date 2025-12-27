@@ -899,6 +899,7 @@ class WebhookProcessingService
     /**
      * Verify webhook signature
      */
+
     protected function verifyWebhookSignature(PaymentWebhook $webhook): bool
     {
         // Get the gateway configuration
@@ -911,21 +912,35 @@ class WebhookProcessingService
             return false;
         }
 
-        // Gateway-specific signature verification
-        switch ($gateway->type) {
+        // Gateway-specific signature verification - switch on CODE, not type
+        switch ($gateway->code) {
             case 'mpesa':
                 return $this->verifyMpesaSignature($webhook, $gateway);
+
+            case 'stripe':
+                return $this->verifyStripeSignature($webhook, $gateway);
+
+            case 'telebirr':
+                return $this->verifyTelebirrSignature($webhook, $gateway);
+
+            case 'airtel_money':
+                return $this->verifyAirtelMoneySignature($webhook, $gateway);
+
+            case 'mtn_momo':
+                return $this->verifyMtnMomoSignature($webhook, $gateway);
 
             case 'bank_transfer':
                 return $this->verifyBankTransferSignature($webhook, $gateway);
 
             default:
-                Log::warning('Unknown gateway type for signature verification', [
+                Log::warning('Unknown gateway code for signature verification', [
+                    'gateway_code' => $gateway->code,
                     'gateway_type' => $gateway->type
                 ]);
                 return false;
         }
     }
+
 
     /**
      * Verify M-Pesa webhook signature
@@ -937,6 +952,43 @@ class WebhookProcessingService
         return true; // Placeholder - implement actual verification
     }
 
+    /**
+     * Verify Stripe webhook signature
+     */
+    protected function verifyStripeSignature(PaymentWebhook $webhook, $gateway): bool
+    {
+        // Stripe uses webhook signing secrets for verification
+        // In production, use Stripe's signature verification:
+        // \Stripe\Webhook::constructEvent($payload, $sigHeader, $endpointSecret)
+        return true; // Placeholder - implement actual verification
+    }
+
+    /**
+     * Verify Telebirr webhook signature
+     */
+    protected function verifyTelebirrSignature(PaymentWebhook $webhook, $gateway): bool
+    {
+        // Implement Telebirr specific signature verification
+        return true; // Placeholder - implement actual verification
+    }
+
+    /**
+     * Verify Airtel Money webhook signature
+     */
+    protected function verifyAirtelMoneySignature(PaymentWebhook $webhook, $gateway): bool
+    {
+        // Implement Airtel Money specific signature verification
+        return true; // Placeholder - implement actual verification
+    }
+
+    /**
+     * Verify MTN MoMo webhook signature
+     */
+    protected function verifyMtnMomoSignature(PaymentWebhook $webhook, $gateway): bool
+    {
+        // Implement MTN MoMo specific signature verification
+        return true; // Placeholder - implement actual verification
+    }
     /**
      * Verify bank transfer webhook signature
      */

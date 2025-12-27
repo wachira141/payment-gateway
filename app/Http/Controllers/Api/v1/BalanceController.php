@@ -22,10 +22,10 @@ class BalanceController extends Controller
             return [
                 'object' => 'balance',
                 'currency' => $balance->currency,
-                'available' => $balance->available_amount,
-                'pending' => $balance->pending_amount,
-                'reserved' => $balance->reserved_amount,
-                'total_volume' => $balance->total_volume,
+                'available' => (int) $balance->available_amount,
+                'pending' => (int) $balance->pending_amount,
+                'reserved' => (int) $balance->reserved_amount,
+                'total_volume' => (int) $balance->total_volume,
                 'last_transaction_at' => $balance->last_transaction_at?->timestamp,
             ];
         });
@@ -59,10 +59,10 @@ class BalanceController extends Controller
         return response()->json([
             'object' => 'balance',
             'currency' => $balance->currency,
-            'available' => $balance->available_amount,
-            'pending' => $balance->pending_amount,
-            'reserved' => $balance->reserved_amount,
-            'total_volume' => $balance->total_volume,
+            'available' => (int) $balance->available_amount,
+            'pending' => (int) $balance->pending_amount,
+            'reserved' => (int) $balance->reserved_amount,
+            'total_volume' => (int) $balance->total_volume,
             'last_transaction_at' => $balance->last_transaction_at?->timestamp,
         ]);
     }
@@ -118,7 +118,7 @@ class BalanceController extends Controller
             return [
                 'id' => $entry->entry_id,
                 'object' => 'balance_transaction',
-                'amount' => $entry->entry_type === 'credit' ? $entry->amount : -$entry->amount,
+                'amount' => (int) ($entry->entry_type === 'credit' ? $entry->amount : -$entry->amount),
                 'currency' => $entry->currency,
                 'description' => $entry->description,
                 'account_type' => $entry->account_type,

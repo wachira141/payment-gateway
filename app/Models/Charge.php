@@ -5,6 +5,17 @@ namespace App\Models;
 use App\Models\BaseModel;
 use Illuminate\Support\Str;
 
+/**
+ * Charge Model
+ * 
+ * IMPORTANT: All monetary amounts are stored in MINOR UNITS (cents/paise).
+ * 
+ * @property int $amount - Transaction amount in minor units
+ * @property int $fee_amount - Total fees in minor units
+ * @property int $gateway_processing_fee - Gateway processing fee in minor units
+ * @property int $platform_application_fee - Platform fee in minor units
+ */
+
 class Charge extends BaseModel
 {
     protected $fillable = [
@@ -16,7 +27,7 @@ class Charge extends BaseModel
         'status',
         'payment_method_type',
         'payment_method_details',
-        'payment_method_data', // Add for confirm method
+        'payment_method_data',
         'connector_name',
         'connector_charge_id',
         'connector_response',
@@ -30,16 +41,15 @@ class Charge extends BaseModel
         'gateway_processing_fee',
         'platform_application_fee',
         'gateway_code',
-        'payment_method_type',
     ];
 
     protected $casts = [
-        'amount' => 'decimal:4',
-        'fee_amount' => 'decimal:4',
-        'gateway_processing_fee' => 'decimal:4',
-        'platform_application_fee' => 'decimal:4',
+        'amount' => 'integer',
+        'fee_amount' => 'integer',
+        'gateway_processing_fee' => 'integer',
+        'platform_application_fee' => 'integer',
         'payment_method_details' => 'array',
-        'payment_method_data' => 'array', // Add for confirm method
+        'payment_method_data' => 'array',
         'connector_response' => 'array',
         'risk_score' => 'array',
         'captured' => 'boolean',

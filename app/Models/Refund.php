@@ -2,12 +2,20 @@
 
 namespace App\Models;
 
+/**
+ * Refund Model
+ * 
+ * IMPORTANT: All monetary amounts are stored in MINOR UNITS (cents/paise).
+ * 
+ * @property int $amount - Refund amount in minor units
+ */
 class Refund extends BaseModel
 {
     protected $table = 'refunds';
 
     protected $fillable = [
         'id',
+        'refund_id',
         'merchant_id',
         'charge_id',
         'payment_intent_id',
@@ -25,6 +33,7 @@ class Refund extends BaseModel
     ];
 
     protected $casts = [
+        'amount' => 'integer',
         'metadata' => 'array',
         'refund_application_fee' => 'boolean',
         'reverse_transfer' => 'boolean',

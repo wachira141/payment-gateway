@@ -20,7 +20,7 @@ return new class extends Migration
             $table->string('gateway_event_id')->nullable()->comment('Gateway-specific event ID');
             $table->json('payload')->comment('Webhook payload data');
             $table->enum('status', ['pending', 'processed', 'failed', 'ignored'])->default('pending');
-            $table->string('processing_error')->nullable()->comment('Error message if processing failed');
+            $table->text('processing_error')->nullable()->comment('Error message if processing failed');
             $table->integer('retry_count')->default(0)->comment('Number of processing retry attempts');
             $table->timestamp('processed_at')->nullable()->comment('When webhook was processed');
             $table->timestamps();

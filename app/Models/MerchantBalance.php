@@ -17,10 +17,10 @@ class MerchantBalance extends BaseModel
     ];
 
     protected $casts = [
-        'available_amount' => 'decimal:4',
-        'pending_amount' => 'decimal:4',
-        'reserved_amount' => 'decimal:4',
-        'total_volume' => 'decimal:4',
+        'available_amount' => 'integer',
+        'pending_amount' => 'integer',
+        'reserved_amount' => 'integer',
+        'total_volume' => 'integer',
         'last_transaction_at' => 'datetime',
     ];
 

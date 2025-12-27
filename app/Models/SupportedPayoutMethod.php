@@ -42,6 +42,11 @@ class SupportedPayoutMethod extends BaseModel
         return $query->where('currency', strtoupper($currency));
     }
 
+    public function scopeForId($query, string $id)
+    {
+        return $query->where('id', $id);
+    }
+
     public function scopeForAmount($query, float $amount)
     {
         return $query->where(function ($q) use ($amount) {

@@ -13,6 +13,7 @@ use App\Services\WebhookProcessingService;
 use App\Services\GatewayPricingService;
 use App\Services\PaymentIntentService;
 use App\Services\WebhookEventService;
+use App\Services\PlatformEarningService;
 use Illuminate\Http\Request;
 use App\Services\WalletTopUpService;
 use Illuminate\Http\JsonResponse;
@@ -25,6 +26,7 @@ class WebhookController extends Controller
     protected $commissionCalculationService;
     protected $webhookProcessingService;
     protected $purchasedServiceService;
+    protected $platformEarningService;
     protected $gatewayPricingService;
     protected $paymentIntentService;
     protected $webhookEventService;
@@ -39,6 +41,7 @@ class WebhookController extends Controller
     public function __construct(
         CommissionCalculationService $commissionCalculationService,
         WebhookProcessingService $webhookProcessingService,
+        PlatformEarningService $platformEarningService,
         GatewayPricingService $gatewayPricingService,
         PaymentIntentService $paymentIntentService,
         PaymentProcessorService $paymentProcessor,
@@ -47,6 +50,7 @@ class WebhookController extends Controller
     ) {
         $this->commissionCalculationService = $commissionCalculationService;
         $this->webhookProcessingService = $webhookProcessingService;
+        $this->platformEarningService = $platformEarningService;
         $this->gatewayPricingService = $gatewayPricingService;
         $this->paymentIntentService = $paymentIntentService;
         $this->webhookEventService = $webhookEventService;
@@ -133,32 +137,6 @@ class WebhookController extends Controller
     private function processWebhook(Request $request, string $gatewayType, string | null  $eventType = null)
     {
         try {
-            // Get gateway
-            // $gateway = PaymentGateway::where('code', $gatewayType)->first();
-            // if (!$gateway) {
-            //     Log::error("Webhook received for unknown gateway: {$gatewayType}");
-            //     return response()->json(['error' => 'Gateway not found'], 404);
-            // }
-
-            // // Create webhook record
-            // $paymentIntent = $this->extractPaymentIntentFromWebhook($request, $gatewayType);
-
-            // $appId = $paymentIntent ? $paymentIntent->merchant_app_id : null;
-
-            // Log::info("Extracted app ID from webhook: " . ($paymentIntent->gateway_data['transaction_id'] ?: 'null'));
-
-            // $webhook = PaymentWebhook::create([
-            //     'payment_gateway_id' => $gateway->id,
-            //     'merchant_app_id' => $appId,
-            //     'webhook_id' => Str::uuid(),
-            //     'event_type' => $eventType ?: $this->determineEventType($request, $gatewayType),
-            //     'gateway_event_id' => $this->extractEventId($request, $gatewayType),
-            //     'payment_intent_id' => $paymentIntent ? $paymentIntent->id : null,
-            //     'payment_transaction_id' => $paymentIntent ? $paymentIntent->gateway_data['transaction_id'] ?? null : null,
-            //     'payload' => $request->all(),
-            //     'status' => 'pending',
-            // ]);
-
             // Get gateway
             $gateway = PaymentGateway::where('code', $gatewayType)->first();
             if (!$gateway) {
@@ -269,7 +247,19 @@ class WebhookController extends Controller
                         $this->commissionCalculationService->processCommission($transaction, $feeCalculation);
 
                         // Create charge and handle ledger balancing for successful payment intents
-                        $this->paymentIntentService->handleSuccessfulPaymentIntent($transaction, $gatewayType, $feeCalculation);
+                        $charge = $this->paymentIntentService->handleSuccessfulPaymentIntent($transaction, $gatewayType, $feeCalculation);
+
+                        // Record platform earning for the payment
+                        if ($charge) {
+                            $gatewayCost = (int) round(($feeCalculation['estimated_gateway_cost'] ?? $feeCalculation['processing_fee']) * 100);
+                            $this->platformEarningService->recordPaymentEarning($charge, $feeCalculation, $gatewayCost);
+                            
+                            Log::info('Platform earning recorded for payment', [
+                                'charge_id' => $charge->charge_id,
+                                'gateway_cost' => $gatewayCost,
+                                'application_fee' => $feeCalculation['application_fee'],
+                            ]);
+                        }
                     }
                 }
                 return response()->json(['success' => true]);
